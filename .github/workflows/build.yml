@@ -22,12 +22,19 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Install npm deps
-        run: npm install
         working-directory: ai-suite-tauri
+        run: npm install
 
-      - name: Build
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Cargo check
+        working-directory: ai-suite-tauri/src-tauri
+        run: cargo check
+
+      - name: Cargo build
+        working-directory: ai-suite-tauri/src-tauri
+        run: cargo build --release
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
         with:
-          projectPath: ai-suite-tauri
+          name: AI_Suite_EXE
+          path: ai-suite-tauri/src-tauri/target/release/ai-suite.exe
