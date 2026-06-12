@@ -5,10 +5,21 @@ use tauri::{
 };
 use std::process::{Command, Child};
 use std::sync::Mutex;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt; // CREATE_NO_WINDOW
+
+/// Create a Command with CREATE_NO_WINDOW (suppresses console popups on Windows)
+fn silent_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000);
+    cmd
+}
 
 // ═══════ Single-instance via lock file ═══════
 
 mod single_instance {
+    use crate::silent_command;
     use std::fs;
     use std::path::PathBuf;
 
@@ -49,7 +60,7 @@ mod single_instance {
     fn is_process_running(pid: u32) -> bool {
         // Try to open process — if it fails, process isn't running
         use std::process::Command;
-        let output = Command::new("tasklist")
+        let output = silent_command("tasklist")
             .args(["/fi", &format!("PID eq {}", pid)])
             .output();
         match output {
@@ -94,6 +105,7 @@ struct AppState {
     orchestrator: Mutex<Option<Child>>,
 }
 
+
 /// Find a working Python executable (system or venv)
 fn find_python() -> Option<String> {
     let python_names = ["python", "python3", "py"];
@@ -110,7 +122,7 @@ fn find_python() -> Option<String> {
             } else {
                 format!("{}{}.exe", prefix, name)
             };
-            if let Ok(output) = Command::new(&full).arg("--version").output() {
+            if let Ok(output) = silent_command(&full).arg("--version").output() {
                 if output.status.success() {
                     return Some(full);
                 }
@@ -123,7 +135,7 @@ fn find_python() -> Option<String> {
 /// Start Ollama if not already running
 fn start_ollama() -> Option<Child> {
     // Check if already running
-    if let Ok(output) = Command::new("ollama").arg("list").output() {
+    if let Ok(output) = silent_command("ollama").arg("list").output() {
         if output.status.success() {
             eprintln!("Ollama already running");
             return None;
@@ -131,7 +143,7 @@ fn start_ollama() -> Option<Child> {
     }
     // Start ollama serve
     eprintln!("Starting Ollama...");
-    Command::new("ollama")
+    silent_command("ollama")
         .arg("serve")
         .spawn()
         .inspect_err(|e| eprintln!("Ollama start failed: {}", e))
@@ -144,13 +156,13 @@ fn start_servers(home: &str) -> (Option<Child>, Option<Child>, Option<Child>) {
 
     let ollama = start_ollama();
 
-    let gen_web = Command::new(&python)
+    let gen_web = silent_command(&python)
         .arg(format!("{}/gen_web.py", home))
         .spawn()
         .inspect_err(|e| eprintln!("gen_web start failed: {}", e))
         .ok();
 
-    let orchestrator = Command::new(&python)
+    let orchestrator = silent_command(&python)
         .arg(format!("{}/model_orchestrator.py", home))
         .spawn()
         .inspect_err(|e| eprintln!("orchestrator start failed: {}", e))
@@ -170,14 +182,14 @@ fn kill_servers(state: &AppState) {
         if let Some(ref mut c) = *orch { c.kill().ok(); }
     }
     // Also kill any leftover python processes
-    let _ = Command::new("taskkill")
+    let _ = silent_command("taskkill")
         .args(["/f", "/im", "python.exe"])
         .spawn();
 }
 
 #[tauri::command]
 fn open_claude_code() {
-    Command::new("cmd")
+    silent_command("cmd")
         .args(["/c", "start", "claude"])
         .spawn()
         .ok();
@@ -269,7 +281,7 @@ pub fn run() {
                 $n = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("AI Suite")
                 $n.Show([Windows.UI.Notifications.ToastNotification]::new($t))
                 "#;
-                let _ = std::process::Command::new("powershell")
+                let _ = silent_command("powershell")
                     .args(["-Command", ps])
                     .spawn();
                 break;
