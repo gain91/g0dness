@@ -129,6 +129,76 @@ else:
                "video_speed","video_to_gif","video_compress","video_crop"]:
         skip(vt, "ffmpeg not found")
 
+# Desktop Control Tests
+print("\n--- Desktop Control ---")
+test("press_key tab", tools.tool_press_key, "tab")
+test("get_windows", tools.tool_get_windows)
+test("focus_window", tools.tool_focus_window, "Program Manager")
+
+# System Management Tests
+print("\n--- System Management ---")
+r = test("list_processes_filter", tools.tool_list_processes, "svchost")
+# kill_process on nonexistent: ok=False is the CORRECT behavior
+def test_inverted(name, fn, *args, **kwargs):
+    global PASS, FAIL
+    try:
+        result = fn(*args, **kwargs)
+        if result.get("ok") is False:
+            PASS += 1
+            print(f"  OK {name} (correctly rejected)")
+        else:
+            FAIL += 1
+            print(f"  FAIL {name}: should have returned ok=False")
+    except Exception as e:
+        FAIL += 1
+        print(f"  CRASH {name}: {e}")
+test_inverted("kill_process_fake", tools.tool_kill_process, "nonexistent_process_12345", "name")
+test("launch_app_calc", tools.tool_launch_app, "calc")
+test("window_control", tools.tool_window_control, "Program Manager", "focus")
+
+# Visual Targeting Tests
+print("\n--- Visual Targeting ---")
+r = test("screenshot_find", tools.tool_screenshot_find, "Start")
+if r and r.get("ok"):
+    matches = r.get("matches", [])
+    print(f"     Found {len(matches)} text matches on screen")
+
+# OCR Test (with generated image)
+print("\n--- OCR ---")
+try:
+    from PIL import Image, ImageDraw
+    ocr_img = os.path.join(td, "ocr_test.png")
+    img = Image.new('RGB', (300, 60), color='white')
+    ImageDraw.Draw(img).text((20, 20), 'Hello OCR Test', fill='black')
+    img.save(ocr_img)
+    test("ocr_file", tools.tool_ocr, ocr_img)
+    os.unlink(ocr_img)
+except ImportError:
+    skip("ocr", "Pillow not available")
+
+# Email Tools (skip if no Outlook)
+print("\n--- Email ---")
+try:
+    import email_tools
+    if email_tools.HAS_OUTLOOK:
+        r = email_tools.tool_search_contacts("test", 1)
+        if r.get("ok") is False:
+            skip("search_contacts", "Outlook not configured")
+        else:
+            test("search_contacts", email_tools.tool_search_contacts, "test", 1)
+    else:
+        skip("email_*", "Outlook/pywin32 not available")
+except ImportError:
+    skip("email_*", "email_tools module not available")
+
+# Key Vault Test
+print("\n--- Security ---")
+try:
+    import key_vault
+    test("key_vault_status", lambda: {"ok": key_vault.HAS_CRYPTO})
+except ImportError:
+    skip("key_vault", "module not available")
+
 # Summary
 total = PASS + FAIL + SKIP
 print(f"\n{'='*40}")

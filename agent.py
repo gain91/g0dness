@@ -378,6 +378,34 @@ class Agent:
             results.append({"tool_call_id": tc["id"], "name": name, "args": args, "result": result})
         return results
 
+    def _chain_hints(self, exec_results: list) -> str:
+        """v4.1: 工具链 — 分析结果，生成下一步提示"""
+        hints = []
+        for er in exec_results:
+            name = er["name"]
+            res = er.get("result", {})
+            if not res.get("ok"):
+                hints.append(f"{name} 失败: {res.get('error','')[:100]}")
+                continue
+            # Auto-chain patterns
+            if name == "list_dir" and res.get("items"):
+                files = [i["name"] for i in res["items"][:5] if i["type"] == "file"]
+                if files:
+                    hints.append(f"list_dir 返回了文件: {', '.join(files)}，可以 read_file 查看内容")
+            elif name == "find_files" and res.get("files"):
+                hints.append(f"找到 {len(res['files'])} 个文件，可以 read_file 或继续筛选")
+            elif name == "web_search" and res.get("results"):
+                hints.append(f"搜索完成，可以 web_fetch 打开链接获取详情")
+            elif name == "screenshot_find" and res.get("matches"):
+                hints.append(f"定位到 {len(res['matches'])} 处文字，可以 click_text 自动点击")
+            elif name == "system_info" and res.get("info"):
+                info = res["info"]
+                if info.get("disk_free_gb", 999) < 10:
+                    hints.append("磁盘空间不足，建议清理临时文件")
+                if info.get("ram_used_pct", 0) > 80:
+                    hints.append("内存占用高，检查 list_processes 找大内存进程")
+        return "\n".join(hints) if hints else ""
+
     # ─── 主循环 ───
 
     def run(self, task: str, system: str = "") -> dict:
@@ -451,6 +479,9 @@ class Agent:
                         "tool_call_id": er["tool_call_id"],
                         "content": json.dumps(er["result"], ensure_ascii=False)
                     })
+                hint = self._chain_hints(exec_results)
+                if hint:
+                    self.messages.append({"role": "user", "content": f"[系统提示] {hint}"})
                 continue
 
             # 3. 无工具调用 → 任务完成
@@ -539,6 +570,9 @@ class Agent:
                         "tool_call_id": er["tool_call_id"],
                         "content": json.dumps(er["result"], ensure_ascii=False)
                     })
+                hint = self._chain_hints(exec_results)
+                if hint:
+                    self.messages.append({"role": "user", "content": f"[系统提示] {hint}"})
                 continue
 
             yield {"type": "done", "text": text, "turns": turn + 1}
