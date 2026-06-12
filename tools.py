@@ -289,9 +289,29 @@ def tool_ocr(image_path=None):
         try:
             import shutil as _sh
             tess = _sh.which("tesseract")
+            if not tess:
+                # Check common paths
+                for p in [
+                    "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
+                    "C:\\Tesseract-OCR\\tesseract.exe",
+                    os.path.expanduser("~\\AppData\\Local\\Tesseract-OCR\\tesseract.exe"),
+                ]:
+                    if os.path.exists(p):
+                        tess = p
+                        break
             if tess:
+                # Ensure tessdata is findable
+                env = os.environ.copy()
+                if "TESSDATA_PREFIX" not in env:
+                    for td in [
+                        os.path.expanduser("~/.tesseract"),
+                        os.path.join(os.path.dirname(tess), "tessdata"),
+                    ]:
+                        if os.path.isdir(td):
+                            env["TESSDATA_PREFIX"] = td
+                            break
                 r = subprocess.run([tess, target, "stdout", "-l", "chi_sim+eng"],
-                                   capture_output=True, text=True, timeout=30,
+                                   capture_output=True, text=True, timeout=30, env=env,
                                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
                 if r.stdout.strip():
                     text = r.stdout.strip()
