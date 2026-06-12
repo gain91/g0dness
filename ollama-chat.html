@@ -410,6 +410,7 @@ body {
             <textarea id="agentTask" placeholder="输入任务，Agent 会自动拆解执行..." rows="1" style="flex:1;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:14px;resize:none;min-height:44px;max-height:120px;font-family:inherit" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();agentSend()}"></textarea>
             <button style="background:var(--accent);color:#fff;border:none;padding:10px 16px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:bold;white-space:nowrap;height:44px" id="agentBtn" onclick="agentSend()">执行</button>
             <button style="background:#a855f7;color:#fff;border:none;padding:10px 12px;border-radius:8px;cursor:pointer;font-size:12px;white-space:nowrap;height:44px" id="agentBgBtn" onclick="agentBackground()">后台</button>
+            <button style="background:#f59e0b;color:#fff;border:none;padding:10px 12px;border-radius:8px;cursor:pointer;font-size:12px;white-space:nowrap;height:44px" id="teamBtn" onclick="teamSend()" title="多 Agent 协作">团队</button>
           </div>
         </div>
       </div>
@@ -1679,6 +1680,116 @@ async function agentBackground() {
     infoDiv.innerHTML = '<div class="role">⏳ 后台运行中</div>任务 ID: <b>' + d.id + '</b><br>状态: ' + d.status + '<br><small>完成后弹出通知</small>';
   } catch(e) {
     infoDiv.innerHTML = '<div class="role">❌ 提交失败</div>' + e.message;
+  }
+}
+
+// ═══════ Multi-Agent Team ═══════
+async function teamSend() {
+  const input = document.getElementById('agentTask');
+  const btn = document.getElementById('teamBtn');
+  const task = input.value.trim();
+  if (!task) return;
+  input.value = ''; input.style.height = 'auto';
+  btn.disabled = true; btn.textContent = '⏳';
+  const log = document.getElementById('agentLog');
+
+  const taskDiv = document.createElement('div');
+  taskDiv.className = 'msg user';
+  taskDiv.innerHTML = '<div class="role">👥 团队任务</div>' + task;
+  log.appendChild(taskDiv);
+
+  const streamDiv = document.createElement('div');
+  streamDiv.className = 'msg assistant';
+  streamDiv.innerHTML = '<div class="role">🤖 Agent 团队工作中...</div>';
+  log.appendChild(streamDiv);
+
+  let agentStates = {}; // agent_id -> {status, text, tools}
+  let planSteps = [];
+
+  try {
+    const resp = await fetch(ORCH_API + '/api/team/stream', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({task: task})
+    });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, {stream: true});
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
+        try {
+          const evt = JSON.parse(line.slice(6));
+          const type = evt.type;
+          if (type === 'plan') {
+            planSteps = evt.detail || [];
+            let html = '<div class="role">👥 团队计划 (' + evt.steps + ' 步)</div>';
+            planSteps.forEach((s,i) => {
+              html += `<div style="font-size:12px;margin:2px 0;padding:4px 8px;border-radius:4px;background:var(--accent-light)">
+                ${i+1}. [${s.role}] ${s.task.slice(0,80)}</div>`;
+            });
+            streamDiv.innerHTML = html;
+          } else if (type === 'thinking') {
+            const aid = evt.agent_id || '?';
+            if (!agentStates[aid]) agentStates[aid] = {status:'working', text:'', tools:[]};
+            agentStates[aid].text = (evt.text||'').slice(-200);
+            renderTeamStatus();
+          } else if (type === 'tool_call') {
+            const aid = evt.agent_id || '?';
+            if (!agentStates[aid]) agentStates[aid] = {status:'working', text:'', tools:[]};
+            agentStates[aid].tools.push({name:evt.tool, ok:null});
+            renderTeamStatus();
+          } else if (type === 'tool_result') {
+            const aid = evt.agent_id || '?';
+            if (agentStates[aid]) {
+              const tc = agentStates[aid].tools.find(t=>t.name===evt.tool&&t.ok===null);
+              if (tc) tc.ok = evt.result?.ok || false;
+            }
+            renderTeamStatus();
+          } else if (type === 'step_done') {
+            const aid = evt.agent_id || '?';
+            if (agentStates[aid]) agentStates[aid].status = 'done';
+            renderTeamStatus();
+          } else if (type === 'step_error') {
+            const aid = evt.agent_id || '?';
+            if (!agentStates[aid]) agentStates[aid] = {status:'error', text:'', tools:[]};
+            agentStates[aid].status = 'error';
+            renderTeamStatus();
+          } else if (type === 'done') {
+            let html = '<div class="role">👥 团队完成 (' + evt.steps + ' 步)</div>';
+            const result = evt.result || {};
+            if (result.text) html += renderMD(result.text.slice(0, 1000));
+            streamDiv.innerHTML = html;
+          }
+        } catch(e) {}
+      }
+      log.scrollTop = log.scrollHeight;
+    }
+  } catch(e) {
+    streamDiv.innerHTML = '<div class="role">❌ 团队执行失败</div>' + e.message;
+  }
+  btn.disabled = false; btn.textContent = '团队';
+  log.scrollTop = log.scrollHeight;
+
+  function renderTeamStatus() {
+    let html = '<div class="role">👥 Agent 团队工作中...</div>';
+    for (let [aid, state] of Object.entries(agentStates)) {
+      const emoji = state.status === 'done' ? '✅' : state.status === 'error' ? '❌' : '🔄';
+      const roleName = planSteps.find(s => ('agent_'+planSteps.indexOf(s)) === aid)?.role ||
+                       (aid === 'synthesizer' ? 'synthesizer' : aid);
+      html += `<div style="margin:4px 0;padding:6px 10px;border-radius:6px;background:var(--bg);border:1px solid var(--border);font-size:12px">
+        ${emoji} <b>${roleName}</b> ${state.status === 'working' ? '· 工作中' : ''}
+        ${state.text ? `<div style="color:var(--muted);margin-top:2px">${state.text}</div>` : ''}
+        ${state.tools.length ? `<div style="margin-top:2px">🔧 ${state.tools.map(t=>t.name+(t.ok===true?'✅':t.ok===false?'❌':'⏳')).join(', ')}</div>` : ''}
+      </div>`;
+    }
+    streamDiv.innerHTML = html;
+    log.scrollTop = log.scrollHeight;
   }
 }
 

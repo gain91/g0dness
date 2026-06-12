@@ -835,6 +835,44 @@ def register_routes(app):
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    # ═══════ v4.1: Multi-Agent Team ═══════
+
+    @app.get("/api/team/roles")
+    async def api_team_roles():
+        try:
+            from multi_agent import AgentTeam
+            team = AgentTeam()
+            return {"ok": True, "roles": team.get_roles()}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @app.post("/api/team/stream")
+    async def api_team_stream(request: Request):
+        try:
+            data = await request.json()
+        except:
+            data = {}
+        task = data.get("task", "").strip()
+        if not task:
+            return JSONResponse({"error": "empty task"}, 400)
+
+        async def generate():
+            try:
+                from multi_agent import AgentTeam
+                team = AgentTeam()
+                for event in team.stream(task):
+                    try:
+                        yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+                    except:
+                        yield f"data: {json.dumps({'type': 'error', 'error': 'serialize'}, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
+                yield "data: [DONE]\n\n"
+
+        return StreamingResponse(generate(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
 
 # ═══════ CLI ═══════
 
