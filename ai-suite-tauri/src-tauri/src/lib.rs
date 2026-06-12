@@ -19,69 +19,34 @@ fn silent_command(program: &str) -> Command {
 // ═══════ Single-instance via lock file ═══════
 
 mod single_instance {
-    use crate::silent_command;
-    use std::fs;
-    use std::path::PathBuf;
-
-    fn lock_path() -> PathBuf {
-        let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:/Users/86538".to_string());
-        PathBuf::from(home).join(".ai-suite").join("app.lock")
-    }
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::null_mut;
 
     pub fn try_lock() -> bool {
-        let path = lock_path();
-        let pid = std::process::id();
-
-        if path.exists() {
-            // Read existing lock
-            if let Ok(content) = fs::read_to_string(&path) {
-                if let Ok(existing_pid) = content.trim().parse::<u32>() {
-                    // Check if that process is still running
-                    if is_process_running(existing_pid) {
-                        eprintln!("Another instance is already running (PID: {})", existing_pid);
-                        bring_existing_window_to_front();
-                        return false;
-                    }
-                }
+        unsafe {
+            extern "system" {
+                fn CreateMutexW(attrs: *const std::ffi::c_void, owner: i32, name: *const u16) -> *mut std::ffi::c_void;
+                fn GetLastError() -> u32;
+                fn CloseHandle(h: *mut std::ffi::c_void) -> i32;
             }
-            // Stale lock — remove it
-            let _ = fs::remove_file(&path);
-        }
-
-        // Create new lock file
-        let parent = path.parent().unwrap();
-        let _ = fs::create_dir_all(parent);
-        if let Err(e) = fs::write(&path, pid.to_string()) {
-            eprintln!("Failed to create lock file: {}", e);
+            const ERROR_ALREADY_EXISTS: u32 = 183;
+            let name: Vec<u16> = OsStr::new("Global\\AI_Suite_g0dness_SingleInstance")
+                .encode_wide().chain(Some(0)).collect();
+            let handle = CreateMutexW(null_mut(), 1, name.as_ptr());
+            if handle.is_null() || GetLastError() == ERROR_ALREADY_EXISTS {
+                bring_existing_window_to_front();
+                if !handle.is_null() { CloseHandle(handle); }
+                return false;
+            }
+            std::mem::forget(handle);
         }
         true
     }
 
-    fn is_process_running(pid: u32) -> bool {
-        // Try to open process — if it fails, process isn't running
-        use std::process::Command;
-        let output = silent_command("tasklist")
-            .args(["/fi", &format!("PID eq {}", pid)])
-            .output();
-        match output {
-            Ok(o) => {
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                stdout.contains(&pid.to_string())
-            }
-            Err(_) => false,
-        }
-    }
-
     fn bring_existing_window_to_front() {
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
-        use std::ptr::null_mut;
-
         let title: Vec<u16> = OsStr::new("AI Suite - g0dness")
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
-
+            .encode_wide().chain(Some(0)).collect();
         unsafe {
             extern "system" {
                 fn FindWindowW(class: *const u16, title: *const u16) -> *mut std::ffi::c_void;
