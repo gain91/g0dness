@@ -52,8 +52,8 @@ test("run_python", tools.tool_run_python, "print(42)")
 
 # Web Tools
 print("\n--- Web Tools ---")
-skip("web_fetch", "needs internet")
-skip("web_search", "needs internet")
+test("web_fetch", tools.tool_web_fetch, "https://www.example.com")
+test("web_search", tools.tool_web_search, "Python programming")
 
 # System Tools
 print("\n--- System Tools ---")
