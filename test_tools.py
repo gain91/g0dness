@@ -9,10 +9,10 @@ PASS = 0
 FAIL = 0
 SKIP = 0
 
-def test(name, fn, *args):
+def test(name, fn, *args, **kwargs):
     global PASS, FAIL, SKIP
     try:
-        result = fn(*args)
+        result = fn(*args, **kwargs)
         ok = result.get("ok", False)
         if ok:
             PASS += 1
