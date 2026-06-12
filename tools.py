@@ -173,34 +173,32 @@ def tool_open_browser(url):
 def tool_screenshot(path=None):
     """截取屏幕截图，返回文件路径"""
     try:
-        import tkinter as tk
-        root = tk.Tk()
-        root.withdraw()
-        img = root.grab_screen()
+        from PIL import ImageGrab
+        img = ImageGrab.grab()
         save_path = path or os.path.expanduser(f"~/Desktop/screenshot_{int(__import__('time').time())}.png")
         img.save(save_path, "PNG")
-        root.destroy()
         return {"ok": True, "path": save_path, "size": f"{img.width}x{img.height}"}
     except ImportError:
-        return {"ok": False, "error": "PIL/Pillow not available. Install: pip install Pillow"}
-    except Exception as e:
-        # Fallback: PowerShell screenshot
-        try:
-            save_path = path or os.path.expanduser("~/Desktop/screenshot.png")
-            ps = f'''
-            Add-Type -AssemblyName System.Windows.Forms,System.Drawing
-            $screen = [System.Windows.Forms.Screen]::PrimaryScreen
-            $bmp = New-Object System.Drawing.Bitmap($screen.Bounds.Width, $screen.Bounds.Height)
-            $g = [System.Drawing.Graphics]::FromImage($bmp)
-            $g.CopyFromScreen(0, 0, 0, 0, $bmp.Size)
-            $bmp.Save("{save_path.replace(chr(92), chr(92)+chr(92))}")
-            $g.Dispose()
-            '''
-            subprocess.run(["powershell", "-Command", ps], timeout=30,
-                          capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            return {"ok": True, "path": save_path, "method": "powershell"}
-        except Exception as e2:
-            return {"ok": False, "error": f"{e} | fallback: {e2}"}
+        pass  # 走 PowerShell 降级
+    except Exception:
+        pass  # 走 PowerShell 降级
+    # Fallback: PowerShell screenshot
+    try:
+        save_path = path or os.path.expanduser("~/Desktop/screenshot.png")
+        ps = f'''
+        Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+        $screen = [System.Windows.Forms.Screen]::PrimaryScreen
+        $bmp = New-Object System.Drawing.Bitmap($screen.Bounds.Width, $screen.Bounds.Height)
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.CopyFromScreen(0, 0, 0, 0, $bmp.Size)
+        $bmp.Save("{save_path.replace(chr(92), chr(92)+chr(92))}")
+        $g.Dispose()
+        '''
+        subprocess.run(["powershell", "-Command", ps], timeout=30,
+                      capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        return {"ok": True, "path": save_path, "method": "powershell"}
+    except Exception as e2:
+        return {"ok": False, "error": f"screenshot failed: {e2}"}
 
 def tool_find_files(directory, pattern="*", max_results=50):
     """递归搜索文件"""
@@ -253,7 +251,8 @@ register("list_dir", "List directory contents", tool_list_dir,
 register("write_file", "Write content to a file", tool_write_file,
          {"path": {"type": "string"}, "content": {"type": "string"}})
 register("find_files", "Recursively search for files by name pattern", tool_find_files,
-         {"directory": {"type": "string"}, "pattern": {"type": "string", "optional": True}})
+         {"directory": {"type": "string"}, "pattern": {"type": "string", "optional": True},
+          "max_results": {"type": "integer", "optional": True}})
 register("shell", "Execute a shell command (30s timeout)", tool_shell,
          {"command": {"type": "string"}, "cwd": {"type": "string", "optional": True}})
 register("run_python", "Execute Python code in isolation (for calculations, data processing)", tool_run_python,
@@ -590,18 +589,29 @@ def tool_system_info():
         # CPU cores
         info["cpu_count"] = os.cpu_count()
 
-        # RAM via ctypes
-        class MEMORYSTATUSEX(ctypes.Structure):
-            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
-                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
-                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong)]
-        mem = MEMORYSTATUSEX()
-        mem.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem))
-        info["ram_total_gb"] = round(mem.ullTotalPhys / (1024**3), 1)
-        info["ram_avail_gb"] = round(mem.ullAvailPhys / (1024**3), 1)
-        info["ram_used_pct"] = mem.dwMemoryLoad
+        # RAM via psutil (reliable), fallback to PowerShell
+        try:
+            import psutil
+            vmem = psutil.virtual_memory()
+            info["ram_total_gb"] = round(vmem.total / (1024**3), 1)
+            info["ram_avail_gb"] = round(vmem.available / (1024**3), 1)
+            info["ram_used_pct"] = int(vmem.percent)
+        except ImportError:
+            try:
+                r = subprocess.run(
+                    ["powershell", "-Command",
+                     "$c=Get-CimInstance Win32_OperatingSystem;Write-Host ($c.TotalVisibleMemorySize/1MB).ToString('0.0');Write-Host ($c.FreePhysicalMemory/1MB).ToString('0.0')"],
+                    capture_output=True, text=True, timeout=10,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                lines = r.stdout.strip().split()
+                if len(lines) >= 2:
+                    info["ram_total_gb"] = round(float(lines[0]) / 1024, 1)
+                    info["ram_avail_gb"] = round(float(lines[1]) / 1024, 1)
+                    info["ram_used_pct"] = round((1 - float(lines[1]) / float(lines[0])) * 100) if float(lines[0]) else 0
+            except:
+                info["ram_total_gb"] = 0
+                info["ram_avail_gb"] = 0
+                info["ram_used_pct"] = 0
 
         # Disk
         import shutil
@@ -870,7 +880,7 @@ def _find_ffmpeg():
     import shutil as _sh
     # Check common paths
     for p in [
-        os.path.join(os.path.dirname(sys.executable) if 'sys' in dir() else "", "ffmpeg.exe"),
+        "ffmpeg.exe",  # in PATH or cwd
         os.path.expanduser("~/ffmpeg/bin/ffmpeg.exe"),
         "C:\\ffmpeg\\bin\\ffmpeg.exe",
         "C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe",
