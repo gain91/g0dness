@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Suite</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Microsoft YaHei',sans-serif;background:#1a1a2e;color:#e0e0e0;
+  display:flex;justify-content:center;align-items:center;height:100vh;flex-direction:column}
+.spinner{width:44px;height:44px;border:3px solid #333;border-top-color:#a78bfa;
+  border-radius:50%;animation:spin .7s linear infinite;margin-bottom:20px}
+@keyframes spin{to{transform:rotate(360deg)}}
+h2{font-size:20px;background:linear-gradient(135deg,#a78bfa,#f472b6);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:8px}
+p{color:#666;font-size:13px}
+.status{color:#a78bfa;font-size:11px;margin-top:16px}
+</style>
+<script>
+// Poll gen_web :5000 until ready, then redirect to chat UI
+let attempts = 0;
+function check() {
+  fetch('http://127.0.0.1:5000/api/status', {signal: AbortSignal.timeout(2000)})
+    .then(r => { if(r.ok) window.location.href = 'http://127.0.0.1:5000/chat'; })
+    .catch(() => { attempts++; if(attempts < 60) setTimeout(check, 1500); });
+}
+check();
+</script>
+</head>
+<body>
+<div class="spinner"></div>
+<h2>AI Suite v3.3</h2>
+<p>45 工具 · 视频编辑 · 桌面控制 · Agent 自动化</p>
+<p class="status" id="hint">首次启动需等待 Python 后端就绪</p>
+</body>
+</html>
