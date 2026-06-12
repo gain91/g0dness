@@ -23,13 +23,12 @@ jobs:
         with:
           toolchain: 1.96.0-x86_64-pc-windows-msvc
 
-      - name: Install npm deps
-        working-directory: ai-suite-tauri
-        run: npm install
+      - name: Install Tauri CLI (Rust)
+        run: cargo install tauri-cli --version "^2" --locked
 
       - name: Build Tauri
-        working-directory: ai-suite-tauri
-        run: npx tauri build
+        working-directory: ai-suite-tauri/src-tauri
+        run: cargo tauri build
 
       - name: Upload Installer
         uses: actions/upload-artifact@v4
