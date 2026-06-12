@@ -97,9 +97,10 @@ def chat_ollama(prompt: str, system: str = "", model_name: str = "deepseek-r1:14
     """本地 Ollama 对话 — 直连，不用 LiteLLM"""
     import urllib.request as ur
     messages = []
-    messages.append({"role": "system", "content": "你是一个直接、诚实的AI助手。去掉所有角色扮演，用第一人称自然回答。不要假装你是某个角色。你的名字是g0dness。"})
     if system:
         messages.append({"role": "system", "content": system})
+    else:
+        messages.append({"role": "system", "content": "你是一个直接、诚实的AI助手。用第一人称自然回答。你的名字是g0dness。"})
     messages.append({"role": "user", "content": prompt})
     body = json.dumps({
         "model": model_name,
@@ -115,9 +116,10 @@ def stream_ollama(prompt: str, system: str = "", model_name: str = "deepseek-r1:
     """Ollama 流式 — yield token by token (line-buffered, UTF-8 safe)"""
     import urllib.request as ur
     messages = []
-    messages.append({"role": "system", "content": "你是一个直接、诚实的AI助手。去掉所有角色扮演，用第一人称自然回答。不要假装你是某个角色。你的名字是g0dness。"})
     if system:
         messages.append({"role": "system", "content": system})
+    else:
+        messages.append({"role": "system", "content": "你是一个直接、诚实的AI助手。用第一人称自然回答。你的名字是g0dness。"})
     messages.append({"role": "user", "content": prompt})
     body = json.dumps({"model": model_name, "messages": messages, "stream": True}).encode()
     req = ur.Request("http://localhost:11434/api/chat", body,
@@ -141,7 +143,7 @@ def chat_deepseek(prompt: str, system: str = "") -> str:
     """DeepSeek V4 — Anthropic Messages API"""
     import urllib.request as ur
     messages = []
-    sys_text = CACHE_SYSTEM_PROMPT + (f"\n{system}" if system else "")
+    sys_text = system if system else CACHE_SYSTEM_PROMPT
     body = json.dumps({
         "model": DEEPSEEK_CONFIG["model"],
         "max_tokens": 8192,
@@ -163,7 +165,7 @@ def chat_deepseek(prompt: str, system: str = "") -> str:
 def stream_deepseek(prompt: str, system: str = ""):
     """DeepSeek V4 流式 — Anthropic SSE format"""
     import urllib.request as ur
-    sys_text = CACHE_SYSTEM_PROMPT + (f"\n{system}" if system else "")
+    sys_text = system if system else CACHE_SYSTEM_PROMPT
     body = json.dumps({
         "model": DEEPSEEK_CONFIG["model"],
         "max_tokens": 8192,
