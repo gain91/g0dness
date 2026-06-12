@@ -64,13 +64,15 @@ def decompose_task(task: str) -> List[Dict]:
     # Heuristic: check for common task patterns
     task_lower = task.lower()
 
-    if any(w in task_lower for w in ["搜索", "查", "搜索", "找", "search", "find", "信息", "资料", "研究"]):
+    if any(w in task_lower for w in ["搜索", "查一下", "查找", "研究", "调研", "信息", "资料", "最新", "search", "find", "research"]):
         steps.append({"role": "researcher", "task": "搜索并收集信息: " + task})
 
-    if any(w in task_lower for w in ["代码", "脚本", "运行", "计算", "分析", "处理", "code", "script", "run", "python"]):
+    if any(w in task_lower for w in ["写代码", "脚本", "编程", "python脚本", "自动化脚本", "代码实现", "运行命令", "执行命令", "code", "script"]):
         steps.append({"role": "coder", "task": "编写代码或脚本处理: " + task})
 
-    if any(w in task_lower for w in ["文件", "文件夹", "桌面", "窗口", "点击", "打开", "清理", "整理", "file", "folder", "window", "click", "clean"]):
+    if any(w in task_lower for w in ["打开文件", "创建文件", "删除文件", "移动文件", "清理文件夹", "整理文件夹",
+                                      "桌面清理", "窗口", "点击", "截图", "操控", "操作文件", "文件管理",
+                                      "file", "folder", "window", "click", "clean disk", "clean folder"]):
         steps.append({"role": "operator", "task": "操作文件或桌面: " + task})
 
     if any(w in task_lower for w in ["邮件", "日历", "email", "calendar", "发邮件", "收邮件"]):
