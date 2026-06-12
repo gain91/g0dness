@@ -579,6 +579,285 @@ register("create_pptx", "Generate a PowerPoint presentation from JSON slide data
 register("create_dxf", "Generate a CAD DXF drawing from JSON entity data", tool_create_dxf,
          {"filename": {"type": "string"}, "entities_json": {"type": "string"}, "units": {"type": "string", "optional": True}})
 
+# ─── System & Desktop Management Tools (v3.2) ───
+
+def tool_system_info():
+    """获取系统信息：CPU/内存/磁盘/电池"""
+    import ctypes
+    try:
+        info = {"platform": os.name, "cwd": os.getcwd()}
+
+        # CPU cores
+        info["cpu_count"] = os.cpu_count()
+
+        # RAM via ctypes
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong)]
+        mem = MEMORYSTATUSEX()
+        mem.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(mem))
+        info["ram_total_gb"] = round(mem.ullTotalPhys / (1024**3), 1)
+        info["ram_avail_gb"] = round(mem.ullAvailPhys / (1024**3), 1)
+        info["ram_used_pct"] = mem.dwMemoryLoad
+
+        # Disk
+        import shutil
+        disk = shutil.disk_usage(os.path.expanduser("~"))
+        info["disk_total_gb"] = round(disk.total / (1024**3), 1)
+        info["disk_free_gb"] = round(disk.free / (1024**3), 1)
+
+        # Battery
+        try:
+            ps_out = subprocess.run(
+                ["powershell", "-Command", "(Get-WmiObject Win32_Battery).EstimatedChargeRemaining"],
+                capture_output=True, text=True, timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW)
+            bat = ps_out.stdout.strip()
+            if bat:
+                info["battery_pct"] = int(bat)
+        except:
+            pass
+
+        return {"ok": True, "info": info}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def tool_list_processes(filter_name: str = ""):
+    """列出运行中的进程"""
+    try:
+        ps = 'Get-Process | Select-Object Id,ProcessName,@{N="MemMB";E={[math]::Round($_.WorkingSet64/1MB,1)}}'
+        if filter_name:
+            ps += f' | Where-Object {{$_.ProcessName -like "*{filter_name}*"}}'
+        ps += ' | Sort-Object MemMB -Descending | Select-Object -First 50 | ConvertTo-Json'
+        r = subprocess.run(["powershell", "-Command", ps],
+                          capture_output=True, text=True, timeout=15,
+                          creationflags=subprocess.CREATE_NO_WINDOW)
+        import json as _j
+        data = _j.loads(r.stdout) if r.stdout.strip() else []
+        if isinstance(data, dict):
+            data = [data]
+        return {"ok": True, "processes": data, "count": len(data)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def tool_kill_process(target, by: str = "name"):
+    """终止进程。target: 进程名或PID；by: 'name' 或 'pid'"""
+    try:
+        if by == "pid":
+            ps = f"Stop-Process -Id {int(target)} -Force"
+        else:
+            ps = f'Stop-Process -Name "{target}" -Force -ErrorAction SilentlyContinue'
+        r = subprocess.run(["powershell", "-Command", ps],
+                          capture_output=True, text=True, timeout=10,
+                          creationflags=subprocess.CREATE_NO_WINDOW)
+        ok = r.returncode == 0 and not r.stderr.strip()
+        return {"ok": ok, "target": target, "by": by,
+                "error": r.stderr.strip()[:500] if not ok else None}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def tool_launch_app(app_path: str, args: str = ""):
+    """启动应用程序"""
+    try:
+        if os.path.exists(app_path):
+            cmd = f'start "" "{app_path}" {args}'
+        else:
+            # Try as command name (e.g., "notepad", "calc", "mspaint")
+            cmd = f'start {app_path} {args}'
+        subprocess.run(["cmd", "/c", cmd], timeout=5,
+                      creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        return {"ok": True, "app": app_path}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def tool_get_volume():
+    """获取系统音量"""
+    try:
+        ps = '''
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.SendKeys]::SendWait("")
+        Add-Type -TypeDefinition @"
+        using System;
+        using System.Runtime.InteropServices;
+        public class Audio {
+            [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
+            [DllImport("user32.dll")] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+        }
+"@
+        [System.Math]::Round(([Audio]::SendMessageW([Audio]::FindWindow("Shell_TrayWnd", $null), 0x0319, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64() / 65535.0) * 100)
+        '''
+        r = subprocess.run(["powershell", "-Command", ps],
+                          capture_output=True, text=True, timeout=5,
+                          creationflags=subprocess.CREATE_NO_WINDOW)
+        vol = r.stdout.strip()
+        if vol:
+            return {"ok": True, "volume": int(float(vol))}
+        return {"ok": False, "error": "Could not read volume"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def tool_set_volume(level: int):
+    """设置系统音量 (0-100)"""
+    try:
+        level = max(0, min(100, level))
+        import ctypes
+        VK_VOLUME_MUTE = 0xAD
+        VK_VOLUME_DOWN = 0xAE
+        VK_VOLUME_UP = 0xAF
+        KEYEVENTF_KEYUP = 0x0002
+
+        # Mute then set via key simulation
+        # First: set to 0 by sending vol down 50 times, then vol up N times
+        for _ in range(50):
+            ctypes.windll.user32.keybd_event(VK_VOLUME_DOWN, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(VK_VOLUME_DOWN, 0, KEYEVENTF_KEYUP, 0)
+        for _ in range(min(level // 2, 50)):
+            ctypes.windll.user32.keybd_event(VK_VOLUME_UP, 0, 0, 0)
+            ctypes.windll.user32.keybd_event(VK_VOLUME_UP, 0, KEYEVENTF_KEYUP, 0)
+        return {"ok": True, "volume": level}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def tool_window_control(title_match: str, action: str = "focus"):
+    """窗口操控：focus/minimize/maximize/restore/close"""
+    import ctypes
+    try:
+        user32 = ctypes.windll.user32
+        SW_ACTIONS = {
+            "focus": 9, "restore": 9,
+            "minimize": 6, "maximize": 3,
+            "close": 0x0010,  # WM_CLOSE
+        }
+        if action not in SW_ACTIONS:
+            return {"ok": False, "error": f"Unknown action: {action}. Use: {list(SW_ACTIONS.keys())}"}
+
+        found = []
+
+        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+        def enum_callback(hwnd, _lparam):
+            buf = ctypes.create_unicode_buffer(256)
+            user32.GetWindowTextW(hwnd, buf, 256)
+            title = buf.value
+            if title and title_match.lower() in title.lower():
+                found.append((hwnd, title))
+            return True
+
+        user32.EnumWindows(WNDENUMPROC(enum_callback), 0)
+
+        if not found:
+            return {"ok": False, "error": f"No window found matching: {title_match}"}
+
+        results = []
+        for hwnd, title in found:
+            if action == "close":
+                user32.PostMessageW(hwnd, SW_ACTIONS["close"], 0, 0)
+            else:
+                user32.ShowWindow(hwnd, SW_ACTIONS[action])
+                if action in ("focus", "restore"):
+                    user32.SetForegroundWindow(hwnd)
+            results.append({"hwnd": str(hwnd), "title": title})
+
+        return {"ok": True, "action": action, "windows": results}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def tool_copy_file(src: str, dst: str):
+    """复制文件（沙箱限制）"""
+    src_check = _sandbox_path(src)
+    if not src_check["ok"]:
+        return src_check
+    dst_check = _sandbox_path(dst)
+    if not dst_check["ok"]:
+        return dst_check
+    try:
+        import shutil
+        os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+        shutil.copy2(src, dst)
+        return {"ok": True, "src": src, "dst": dst}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def tool_move_file(src: str, dst: str):
+    """移动文件（沙箱限制）"""
+    src_check = _sandbox_path(src)
+    if not src_check["ok"]:
+        return src_check
+    dst_check = _sandbox_path(dst)
+    if not dst_check["ok"]:
+        return dst_check
+    try:
+        import shutil
+        os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+        shutil.move(src, dst)
+        return {"ok": True, "src": src, "dst": dst}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def tool_delete_file(path: str, permanent: bool = False):
+    """删除文件/文件夹（沙箱限制）。permanent=True 永久删除，否则到回收站"""
+    path_check = _sandbox_path(path)
+    if not path_check["ok"]:
+        return path_check
+    try:
+        import shutil
+        if os.path.isdir(path):
+            if permanent:
+                shutil.rmtree(path)
+            else:
+                import send2trash
+                send2trash.send2trash(path)
+        else:
+            if permanent:
+                os.unlink(path)
+            else:
+                import send2trash
+                send2trash.send2trash(path)
+        return {"ok": True, "path": path, "permanent": permanent}
+    except ImportError:
+        # send2trash not available, force permanent
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                os.unlink(path)
+            return {"ok": True, "path": path, "permanent": True, "note": "send2trash not installed, permanent delete used"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+register("system_info", "Get system information (CPU, RAM, disk, battery)", tool_system_info, {})
+register("list_processes", "List running processes, optionally filter by name", tool_list_processes,
+         {"filter_name": {"type": "string", "optional": True}})
+register("kill_process", "Kill a process by name or PID", tool_kill_process,
+         {"target": {"type": "string"}, "by": {"type": "string", "optional": True}})
+register("launch_app", "Launch an application by path or name (e.g. notepad, calc)", tool_launch_app,
+         {"app_path": {"type": "string"}, "args": {"type": "string", "optional": True}})
+register("get_volume", "Get current system volume level (0-100)", tool_get_volume, {})
+register("set_volume", "Set system volume level (0-100)", tool_set_volume,
+         {"level": {"type": "integer"}})
+register("window_control", "Control a window: focus/minimize/maximize/restore/close", tool_window_control,
+         {"title_match": {"type": "string"}, "action": {"type": "string", "optional": True}})
+register("copy_file", "Copy a file (sandbox-restricted to safe paths)", tool_copy_file,
+         {"src": {"type": "string"}, "dst": {"type": "string"}})
+register("move_file", "Move/rename a file (sandbox-restricted to safe paths)", tool_move_file,
+         {"src": {"type": "string"}, "dst": {"type": "string"}})
+register("delete_file", "Delete a file or folder (recycle bin by default, permanent if set)", tool_delete_file,
+         {"path": {"type": "string"}, "permanent": {"type": "boolean", "optional": True}})
+
 def execute(tool_name, params):
     if tool_name not in TOOLS:
         return {"ok": False, "error": f"Unknown tool: {tool_name}"}
