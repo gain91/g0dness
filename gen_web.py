@@ -711,7 +711,7 @@ async def serve_upload(filename: str):
 
 # ═══════════════ 前端 ═══════════════
 
-CHAT_HTML_PATH = "C:/Users/86538/SillyTavern/public/ollama-chat.html"
+CHAT_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ollama-chat.html")
 
 @app.get("/")
 async def index():
