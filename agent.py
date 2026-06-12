@@ -607,7 +607,14 @@ def register_routes(app):
 
         # Check tesseract
         import shutil as _sh
-        health["details"]["tesseract"] = bool(_sh.which("tesseract"))
+        tess = _sh.which("tesseract")
+        if not tess:
+            for p in ["C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
+                      "C:\\Tesseract-OCR\\tesseract.exe"]:
+                if _os.path.exists(p):
+                    tess = p
+                    break
+        health["details"]["tesseract"] = bool(tess)
 
         # Count available tools (ones whose deps are met)
         for name in tools.TOOLS:
