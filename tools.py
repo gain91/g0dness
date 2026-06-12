@@ -858,6 +858,389 @@ register("move_file", "Move/rename a file (sandbox-restricted to safe paths)", t
 register("delete_file", "Delete a file or folder (recycle bin by default, permanent if set)", tool_delete_file,
          {"path": {"type": "string"}, "permanent": {"type": "boolean", "optional": True}})
 
+# ─── Video Editing Tools (v3.3) ───
+
+FFMPEG_PATH = None
+
+def _find_ffmpeg():
+    """Locate ffmpeg binary"""
+    global FFMPEG_PATH
+    if FFMPEG_PATH:
+        return FFMPEG_PATH
+    import shutil as _sh
+    # Check common paths
+    for p in [
+        os.path.join(os.path.dirname(sys.executable) if 'sys' in dir() else "", "ffmpeg.exe"),
+        os.path.expanduser("~/ffmpeg/bin/ffmpeg.exe"),
+        "C:\\ffmpeg\\bin\\ffmpeg.exe",
+        "C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe",
+    ]:
+        if os.path.exists(p):
+            FFMPEG_PATH = p
+            return p
+    found = _sh.which("ffmpeg")
+    if found:
+        FFMPEG_PATH = found
+        return found
+    return None
+
+def _run_ffmpeg(args: list, timeout: int = 120) -> dict:
+    """Run ffmpeg with args, return result dict"""
+    ff = _find_ffmpeg()
+    if not ff:
+        return {"ok": False, "error": "ffmpeg not found. Install ffmpeg and add to PATH."}
+    try:
+        result = subprocess.run(
+            [ff] + args, capture_output=True, text=True, timeout=timeout,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        )
+        return {"ok": result.returncode == 0, "returncode": result.returncode,
+                "stderr_last": result.stderr.strip()[-500:] if result.stderr else "",
+                "stdout": result.stdout.strip()[:500]}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": f"ffmpeg timed out ({timeout}s)"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def _ffmpeg_safe_path(path: str) -> str:
+    """Check path is valid, return absolute"""
+    abs_path = os.path.abspath(path)
+    return abs_path
+
+
+def tool_video_info(video_path: str):
+    """获取视频元信息：时长、分辨率、编码、码率、帧数"""
+    path = _ffmpeg_safe_path(video_path)
+    if not os.path.exists(path):
+        return {"ok": False, "error": f"File not found: {video_path}"}
+
+    # Use ffprobe if available
+    ffprobe = os.path.join(os.path.dirname(_find_ffmpeg() or ""), "ffprobe.exe")
+    if not os.path.exists(ffprobe):
+        ffprobe = None
+        import shutil as _sh
+        found = _sh.which("ffprobe")
+        if found:
+            ffprobe = found
+
+    if ffprobe:
+        try:
+            r = subprocess.run([ffprobe, "-v", "quiet", "-print_format", "json",
+                               "-show_format", "-show_streams", path],
+                              capture_output=True, text=True, timeout=15,
+                              creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+            if r.returncode == 0:
+                import json as _j
+                data = _j.loads(r.stdout)
+                fmt = data.get("format", {})
+                streams = data.get("streams", [])
+                video_stream = next((s for s in streams if s.get("codec_type") == "video"), {})
+                audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), {})
+                return {"ok": True, "path": path,
+                        "duration_s": float(fmt.get("duration", 0)),
+                        "size_mb": round(int(fmt.get("size", 0)) / (1024**2), 1),
+                        "bitrate_kbps": int(int(fmt.get("bit_rate", 0)) / 1000),
+                        "video_codec": video_stream.get("codec_name", ""),
+                        "resolution": f"{video_stream.get('width', '?')}x{video_stream.get('height', '?')}",
+                        "fps": eval(str(video_stream.get("r_frame_rate", "0/1"))),
+                        "audio_codec": audio_stream.get("codec_name", ""),
+                        "audio_channels": audio_stream.get("channels", 0),
+                        "has_audio": bool(audio_stream)}
+        except:
+            pass
+
+    # Fallback: parse ffmpeg stderr
+    r = _run_ffmpeg(["-i", path, "-f", "null", "NUL"], timeout=15)
+    info = {"ok": True, "path": path, "stderr_parse": True}
+    stderr = r.get("stderr_last", "")
+    import re
+    dur_match = re.search(r'Duration:\s*(\d+):(\d+):(\d+\.\d+)', stderr)
+    if dur_match:
+        h, m, s = int(dur_match.group(1)), int(dur_match.group(2)), float(dur_match.group(3))
+        info["duration_s"] = h * 3600 + m * 60 + s
+    res_match = re.search(r'(\d{3,4})x(\d{3,4})', stderr)
+    if res_match:
+        info["resolution"] = f"{res_match.group(1)}x{res_match.group(2)}"
+    codec_match = re.search(r'Video:\s*(\S+)', stderr)
+    if codec_match:
+        info["video_codec"] = codec_match.group(1)
+    return info
+
+
+def tool_video_trim(video_path: str, output_path: str, start: str = "00:00:00", duration: str = None, end: str = None):
+    """裁剪视频片段。start: HH:MM:SS 或秒数；duration/end: 时长或结束时间"""
+    src = _ffmpeg_safe_path(video_path)
+    dst = _ffmpeg_safe_path(output_path)
+    if not os.path.exists(src):
+        return {"ok": False, "error": f"Source not found: {video_path}"}
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    args = ["-i", src, "-ss", str(start), "-c:v", "libx264", "-c:a", "aac", "-avoid_negative_ts", "make_zero"]
+    if end:
+        args += ["-to", str(end)]
+    elif duration:
+        args += ["-t", str(duration)]
+    args += ["-y", dst]
+    r = _run_ffmpeg(args)
+    r["output"] = dst
+    return r
+
+
+def tool_video_concat(video_paths: str, output_path: str):
+    """拼接多个视频（JSON 数组字符串，每个元素是文件路径）"""
+    import json as _j
+    try:
+        paths = _j.loads(video_paths) if isinstance(video_paths, str) else video_paths
+    except:
+        return {"ok": False, "error": "video_paths must be JSON array of file paths"}
+
+    dst = _ffmpeg_safe_path(output_path)
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+
+    # Write concat file list
+    concat_file = os.path.join(tempfile.gettempdir(), f"ffmpeg_concat_{os.getpid()}.txt")
+    with open(concat_file, "w", encoding="utf-8") as f:
+        for p in paths:
+            abs_p = _ffmpeg_safe_path(p)
+            if not os.path.exists(abs_p):
+                return {"ok": False, "error": f"File not found: {p}"}
+            f.write(f"file '{abs_p.replace(chr(92), '/')}'\n")
+
+    r = _run_ffmpeg(["-f", "concat", "-safe", "0", "-i", concat_file, "-c", "copy", "-y", dst])
+    try:
+        os.unlink(concat_file)
+    except:
+        pass
+    r["output"] = dst
+    r["input_count"] = len(paths)
+    return r
+
+
+def tool_video_resize(video_path: str, output_path: str, width: int = 1920, height: int = 1080):
+    """调整视频分辨率"""
+    src = _ffmpeg_safe_path(video_path)
+    dst = _ffmpeg_safe_path(output_path)
+    if not os.path.exists(src):
+        return {"ok": False, "error": f"Source not found: {video_path}"}
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    r = _run_ffmpeg(["-i", src, "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
+                     "-c:v", "libx264", "-c:a", "aac", "-y", dst])
+    r["output"] = dst
+    r["resolution"] = f"{width}x{height}"
+    return r
+
+
+def tool_video_extract_audio(video_path: str, output_path: str = None, format: str = "mp3"):
+    """从视频提取音频"""
+    src = _ffmpeg_safe_path(video_path)
+    if not os.path.exists(src):
+        return {"ok": False, "error": f"Source not found: {video_path}"}
+    if not output_path:
+        base = os.path.splitext(src)[0]
+        output_path = f"{base}_audio.{format}"
+    dst = _ffmpeg_safe_path(output_path)
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    codec_map = {"mp3": "libmp3lame", "aac": "aac", "wav": "pcm_s16le", "ogg": "libvorbis", "m4a": "aac"}
+    codec = codec_map.get(format, "libmp3lame")
+    r = _run_ffmpeg(["-i", src, "-vn", "-c:a", codec, "-q:a", "2", "-y", dst])
+    r["output"] = dst
+    return r
+
+
+def tool_video_replace_audio(video_path: str, audio_path: str, output_path: str):
+    """替换视频音轨（用新的音频文件替换原音轨）"""
+    src = _ffmpeg_safe_path(video_path)
+    aud = _ffmpeg_safe_path(audio_path)
+    dst = _ffmpeg_safe_path(output_path)
+    if not os.path.exists(src):
+        return {"ok": False, "error": f"Video not found: {video_path}"}
+    if not os.path.exists(aud):
+        return {"ok": False, "error": f"Audio not found: {audio_path}"}
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    r = _run_ffmpeg(["-i", src, "-i", aud, "-c:v", "copy", "-map", "0:v:0", "-map", "1:a:0",
+                     "-shortest", "-y", dst])
+    r["output"] = dst
+    return r
+
+
+def tool_video_speed(video_path: str, output_path: str, speed: float = 2.0):
+    """调整视频播放速度。speed: 0.5(半速) / 2.0(双倍速)"""
+    src = _ffmpeg_safe_path(video_path)
+    dst = _ffmpeg_safe_path(output_path)
+    if not os.path.exists(src):
+        return {"ok": False, "error": f"Source not found: {video_path}"}
+    if speed <= 0 or speed > 10:
+        return {"ok": False, "error": "Speed must be 0.01-10.0"}
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    speed_factor = 1.0 / speed
+    r = _run_ffmpeg(["-i", src, "-filter_complex",
+                     f"[0:v]setpts={speed_factor}*PTS[v];[0:a]atempo={speed}[a]",
+                     "-map", "[v]", "-map", "[a]", "-y", dst])
+    r["output"] = dst
+    r["speed"] = speed
+    return r
+
+
+def tool_video_to_gif(video_path: str, output_path: str = None, start: str = "00:00:00",
+                       duration: float = 5.0, width: int = 480, fps: int = 10):
+    """视频转 GIF"""
+    src = _ffmpeg_safe_path(video_path)
+    if not os.path.exists(src):
+        return {"ok": False, "error": f"Source not found: {video_path}"}
+    if not output_path:
+        output_path = os.path.splitext(src)[0] + ".gif"
+    dst = _ffmpeg_safe_path(output_path)
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    r = _run_ffmpeg(["-i", src, "-ss", str(start), "-t", str(duration),
+                     "-vf", f"fps={fps},scale={width}:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
+                     "-loop", "0", "-y", dst])
+    r["output"] = dst
+    return r
+
+
+def tool_video_add_text(video_path: str, text: str, output_path: str,
+                         position: str = "bottom", font_size: int = 24,
+                         font_color: str = "white"):
+    """视频添加文字叠加。position: top/bottom/center"""
+    src = _ffmpeg_safe_path(video_path)
+    dst = _ffmpeg_safe_path(output_path)
+    if not os.path.exists(src):
+        return {"ok": False, "error": f"Source not found: {video_path}"}
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+
+    pos_map = {"top": "x=(w-text_w)/2:y=20",
+               "bottom": "x=(w-text_w)/2:y=h-text_h-20",
+               "center": "x=(w-text_w)/2:y=(h-text_h)/2"}
+    pos = pos_map.get(position, pos_map["bottom"])
+
+    # Escape special chars in text for ffmpeg drawtext
+    safe_text = text.replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
+
+    r = _run_ffmpeg(["-i", src, "-vf",
+                     f"drawtext=text='{safe_text}':fontsize={font_size}:fontcolor={font_color}:{pos}:box=1:boxcolor=black@0.5:boxborderw=5",
+                     "-c:a", "copy", "-y", dst])
+    r["output"] = dst
+    return r
+
+
+def tool_video_compress(video_path: str, output_path: str, crf: int = 28, preset: str = "medium"):
+    """压缩视频（降低文件大小）。crf: 18-51 (越高越小质量越差)；preset: ultrafast/fast/medium/slow"""
+    src = _ffmpeg_safe_path(video_path)
+    dst = _ffmpeg_safe_path(output_path)
+    if not os.path.exists(src):
+        return {"ok": False, "error": f"Source not found: {video_path}"}
+    if crf < 0 or crf > 51:
+        return {"ok": False, "error": "CRF must be 0-51"}
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    r = _run_ffmpeg(["-i", src, "-c:v", "libx264", "-crf", str(crf), "-preset", preset,
+                     "-c:a", "aac", "-b:a", "128k", "-y", dst])
+    r["output"] = dst
+    if r["ok"] and os.path.exists(dst):
+        orig_size = os.path.getsize(src)
+        new_size = os.path.getsize(dst)
+        r["original_mb"] = round(orig_size / (1024**2), 1)
+        r["output_mb"] = round(new_size / (1024**2), 1)
+        r["reduction_pct"] = round((1 - new_size / orig_size) * 100, 1) if orig_size else 0
+    return r
+
+
+def tool_video_convert(video_path: str, output_path: str, vcodec: str = "libx264", acodec: str = "aac"):
+    """转换视频格式/编码"""
+    src = _ffmpeg_safe_path(video_path)
+    dst = _ffmpeg_safe_path(output_path)
+    if not os.path.exists(src):
+        return {"ok": False, "error": f"Source not found: {video_path}"}
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    r = _run_ffmpeg(["-i", src, "-c:v", vcodec, "-c:a", acodec, "-y", dst])
+    r["output"] = dst
+    return r
+
+
+def tool_video_extract_frames(video_path: str, output_dir: str = None,
+                               fps: float = 1, start: str = "00:00:00",
+                               duration: float = None, width: int = None):
+    """提取视频帧为图片。fps: 每秒提取帧数；width: 输出宽度（保持比例）"""
+    src = _ffmpeg_safe_path(video_path)
+    if not os.path.exists(src):
+        return {"ok": False, "error": f"Source not found: {video_path}"}
+    if not output_dir:
+        output_dir = os.path.join(os.path.dirname(src), f"frames_{os.path.splitext(os.path.basename(src))[0]}")
+    os.makedirs(output_dir, exist_ok=True)
+    out_pattern = os.path.join(output_dir, "frame_%06d.jpg")
+    args = ["-i", src, "-ss", str(start)]
+    if duration:
+        args += ["-t", str(duration)]
+    vf = f"fps={fps}"
+    if width:
+        vf += f",scale={width}:-1"
+    args += ["-vf", vf, "-q:v", "2", "-y", out_pattern]
+    r = _run_ffmpeg(args)
+    # Count output frames
+    count = 0
+    if r["ok"]:
+        count = len([f for f in os.listdir(output_dir) if f.endswith(".jpg")])
+    r["output_dir"] = output_dir
+    r["frame_count"] = count
+    return r
+
+
+def tool_video_crop(video_path: str, output_path: str, x: int = 0, y: int = 0,
+                     width: int = 1920, height: int = 1080):
+    """裁剪视频区域"""
+    src = _ffmpeg_safe_path(video_path)
+    dst = _ffmpeg_safe_path(output_path)
+    if not os.path.exists(src):
+        return {"ok": False, "error": f"Source not found: {video_path}"}
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    r = _run_ffmpeg(["-i", src, "-vf", f"crop={width}:{height}:{x}:{y}",
+                     "-c:a", "copy", "-y", dst])
+    r["output"] = dst
+    r["crop"] = f"{width}x{height}+{x}+{y}"
+    return r
+
+
+register("video_info", "Get video metadata: duration, resolution, codec, bitrate", tool_video_info,
+         {"video_path": {"type": "string"}})
+register("video_trim", "Trim/cut a video segment", tool_video_trim,
+         {"video_path": {"type": "string"}, "output_path": {"type": "string"},
+          "start": {"type": "string", "optional": True}, "duration": {"type": "string", "optional": True},
+          "end": {"type": "string", "optional": True}})
+register("video_concat", "Concatenate/join multiple videos", tool_video_concat,
+         {"video_paths": {"type": "string", "description": "JSON array of file paths"},
+          "output_path": {"type": "string"}})
+register("video_resize", "Resize/scale video resolution", tool_video_resize,
+         {"video_path": {"type": "string"}, "output_path": {"type": "string"},
+          "width": {"type": "integer", "optional": True}, "height": {"type": "integer", "optional": True}})
+register("video_extract_audio", "Extract audio track from video to mp3/aac/wav", tool_video_extract_audio,
+         {"video_path": {"type": "string"}, "output_path": {"type": "string", "optional": True},
+          "format": {"type": "string", "optional": True}})
+register("video_replace_audio", "Replace video audio track with new audio file", tool_video_replace_audio,
+         {"video_path": {"type": "string"}, "audio_path": {"type": "string"}, "output_path": {"type": "string"}})
+register("video_speed", "Change video playback speed (0.5=half, 2.0=double)", tool_video_speed,
+         {"video_path": {"type": "string"}, "output_path": {"type": "string"},
+          "speed": {"type": "number", "optional": True}})
+register("video_to_gif", "Convert video segment to animated GIF", tool_video_to_gif,
+         {"video_path": {"type": "string"}, "output_path": {"type": "string", "optional": True},
+          "start": {"type": "string", "optional": True}, "duration": {"type": "number", "optional": True},
+          "width": {"type": "integer", "optional": True}, "fps": {"type": "integer", "optional": True}})
+register("video_add_text", "Overlay text on video", tool_video_add_text,
+         {"video_path": {"type": "string"}, "text": {"type": "string"}, "output_path": {"type": "string"},
+          "position": {"type": "string", "optional": True}, "font_size": {"type": "integer", "optional": True},
+          "font_color": {"type": "string", "optional": True}})
+register("video_compress", "Compress video to reduce file size (CRF-based)", tool_video_compress,
+         {"video_path": {"type": "string"}, "output_path": {"type": "string"},
+          "crf": {"type": "integer", "optional": True}, "preset": {"type": "string", "optional": True}})
+register("video_convert", "Convert video format/codec", tool_video_convert,
+         {"video_path": {"type": "string"}, "output_path": {"type": "string"},
+          "vcodec": {"type": "string", "optional": True}, "acodec": {"type": "string", "optional": True}})
+register("video_extract_frames", "Extract video frames as images", tool_video_extract_frames,
+         {"video_path": {"type": "string"}, "output_dir": {"type": "string", "optional": True},
+          "fps": {"type": "number", "optional": True}, "start": {"type": "string", "optional": True},
+          "duration": {"type": "number", "optional": True}, "width": {"type": "integer", "optional": True}})
+register("video_crop", "Crop a region from video", tool_video_crop,
+         {"video_path": {"type": "string"}, "output_path": {"type": "string"},
+          "x": {"type": "integer", "optional": True}, "y": {"type": "integer", "optional": True},
+          "width": {"type": "integer", "optional": True}, "height": {"type": "integer", "optional": True}})
+
 def execute(tool_name, params):
     if tool_name not in TOOLS:
         return {"ok": False, "error": f"Unknown tool: {tool_name}"}
