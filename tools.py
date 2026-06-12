@@ -472,6 +472,113 @@ register("get_windows", "List all visible window titles", tool_get_windows, {})
 register("focus_window", "Focus a window by title (partial match)", tool_focus_window,
          {"title_match": {"type": "string"}})
 
+# ─── Document Generation Tools ───
+
+def tool_create_pptx(title: str, slides_json: str = "[]", output_path: str = None):
+    """生成 PPTX 演示文稿"""
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches, Pt
+        import json as _json
+
+        slides_data = _json.loads(slides_json) if isinstance(slides_json, str) else slides_json
+        prs = Presentation()
+        prs.slide_width = Inches(13.333)
+        prs.slide_height = Inches(7.5)
+
+        for s in slides_data:
+            layout_idx = {"title": 0, "bullet": 1, "image": 6, "end": 0}.get(
+                s.get("layout", "bullet"), 1)
+            if layout_idx >= len(prs.slide_layouts):
+                layout_idx = 1
+            slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
+
+            # Title
+            if s.get("title") and slide.shapes.title:
+                slide.shapes.title.text = s["title"]
+
+            # Content
+            if s.get("content"):
+                if isinstance(s["content"], list):
+                    text = "\n".join(f"• {item}" for item in s["content"])
+                else:
+                    text = s["content"]
+                # Find or use subtitle placeholder
+                if len(slide.placeholders) > 1:
+                    ph = slide.placeholders[1]
+                    ph.text = text
+
+            # Subtitle for title slides
+            if s.get("subtitle") and len(slide.placeholders) > 1:
+                slide.placeholders[1].text = s["subtitle"]
+
+        save_path = output_path or os.path.expanduser(
+            f"~/Desktop/{title.replace(' ','_')[:30]}.pptx")
+        os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+        prs.save(save_path)
+        return {"ok": True, "path": save_path, "slides": len(slides_data)}
+    except ImportError:
+        return {"ok": False, "error": "python-pptx not installed. pip install python-pptx"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def tool_create_dxf(filename: str, entities_json: str = "[]", units: str = "mm"):
+    """生成 DXF CAD 图纸"""
+    try:
+        import ezdxf
+        import json as _json
+
+        data = _json.loads(entities_json) if isinstance(entities_json, str) else entities_json
+        entities = data.get("entities", data) if isinstance(data, dict) else data
+        title = data.get("title", filename) if isinstance(data, dict) else filename
+
+        doc = ezdxf.new("R2010")
+        msp = doc.modelspace()
+
+        # Set up layers
+        for layer in ["outline", "dimension", "hidden", "center", "holes", "text"]:
+            doc.layers.add(name=layer, color={"outline": 7, "dimension": 3,
+                          "hidden": 8, "center": 1, "holes": 4, "text": 2}.get(layer, 7))
+
+        for e in entities:
+            etype = e.get("type", "")
+            layer = e.get("layer", "outline")
+
+            if etype == "line":
+                msp.add_line((e["x1"], e["y1"]), (e["x2"], e["y2"]),
+                            dxfattribs={"layer": layer})
+            elif etype == "circle":
+                msp.add_circle((e["cx"], e["cy"]), e.get("radius", 10),
+                              dxfattribs={"layer": layer})
+            elif etype == "arc":
+                msp.add_arc((e["cx"], e["cy"]), e.get("radius", 10),
+                           e.get("start_angle", 0), e.get("end_angle", 90),
+                           dxfattribs={"layer": layer})
+            elif etype == "rect":
+                x, y, w, h = e["x"], e["y"], e["w"], e["h"]
+                pts = [(x, y), (x+w, y), (x+w, y+h), (x, y+h)]
+                msp.add_lwpolyline(pts, close=True, dxfattribs={"layer": layer})
+            elif etype == "text":
+                msp.add_text(e.get("text", ""), dxfattribs={
+                    "layer": "text", "height": e.get("height", 5)
+                }).set_placement((e.get("x", 0), e.get("y", 0)))
+
+        save_path = os.path.expanduser(
+            f"~/Desktop/{filename.replace('.dxf','')[:30]}.dxf")
+        doc.saveas(save_path)
+        return {"ok": True, "path": save_path, "entities": len(entities),
+                "title": title, "units": units}
+    except ImportError:
+        return {"ok": False, "error": "ezdxf not installed. pip install ezdxf"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+register("create_pptx", "Generate a PowerPoint presentation from JSON slide data", tool_create_pptx,
+         {"title": {"type": "string"}, "slides_json": {"type": "string"}, "output_path": {"type": "string", "optional": True}})
+register("create_dxf", "Generate a CAD DXF drawing from JSON entity data", tool_create_dxf,
+         {"filename": {"type": "string"}, "entities_json": {"type": "string"}, "units": {"type": "string", "optional": True}})
+
 def execute(tool_name, params):
     if tool_name not in TOOLS:
         return {"ok": False, "error": f"Unknown tool: {tool_name}"}
