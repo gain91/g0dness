@@ -77,8 +77,20 @@ test("clipboard_read", tools.tool_clipboard_read)
 
 # Document Tools
 print("\n--- Document Tools ---")
-skip("create_pptx", "needs python-pptx")
-skip("create_dxf", "needs ezdxf")
+try:
+    from pptx import Presentation
+    slides = [{"title": "Test Slide", "content": ["Item 1", "Item 2"]}]
+    test("create_pptx", tools.tool_create_pptx, "Test", json.dumps(slides))
+except ImportError:
+    skip("create_pptx", "needs python-pptx")
+
+try:
+    import ezdxf
+    entities = [{"type": "line", "x1": 0, "y1": 0, "x2": 50, "y2": 50, "layer": "outline"},
+                {"type": "circle", "cx": 25, "cy": 25, "radius": 10, "layer": "holes"}]
+    test("create_dxf", tools.tool_create_dxf, "test_drawing", json.dumps(entities))
+except ImportError:
+    skip("create_dxf", "needs ezdxf")
 
 # Video Tools
 print("\n--- Video Tools ---")
