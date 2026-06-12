@@ -84,11 +84,23 @@ AGENT_SYSTEM_FALLBACK = AGENT_SYSTEM + "\n\n" + _tools_markdown()
 
 # ═══════ DeepSeek V4 Config ═══════
 
-DEEPSEEK_CONFIG = {
-    "base_url": "https://api.deepseek.com/anthropic",
-    "api_key": "sk-fa62cb70a70343dba531bf2cc48a57e3",
-    "model": "deepseek-v4-pro",
-}
+import os as _os
+
+def _load_deepseek_config():
+    """Load DeepSeek config from model_keys.json"""
+    key_path = _os.path.expanduser("~/.model_keys.json")
+    try:
+        with open(key_path, "r") as f:
+            keys = json.load(f)
+        return {
+            "base_url": "https://api.deepseek.com/anthropic",
+            "api_key": keys.get("deepseek_key", ""),
+            "model": "deepseek-v4-pro",
+        }
+    except Exception:
+        return {"base_url": "https://api.deepseek.com/anthropic", "api_key": "", "model": "deepseek-v4-pro"}
+
+DEEPSEEK_CONFIG = _load_deepseek_config()
 
 # ═══════ Agent 核心 ═══════
 

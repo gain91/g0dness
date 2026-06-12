@@ -270,59 +270,73 @@ register("screenshot", "Take a screenshot and save to file", tool_screenshot,
          {"path": {"type": "string", "optional": True}})
 
 def tool_ocr(image_path=None):
-    """OCR 识别图片文字（Windows 内置 OCR 引擎）"""
+    """OCR 识别图片文字。优先 tesseract，降级 Windows 内置引擎"""
     try:
-        # 先截图如果没有指定路径
         target = image_path
         if not target:
             import time
             target = os.path.expanduser(f"~/Desktop/ocr_{int(time.time())}.png")
             r = tool_screenshot(target)
             if not r.get("ok"):
-                return {"ok": False, "error": "截图失败: " + r.get("error", "")}
+                return {"ok": False, "error": "截图失败: " + r.get("error", "未知")}
 
-        ps = f'''
-        Add-Type -AssemblyName System.Drawing
-        $bmp = [System.Drawing.Bitmap]::FromFile("{target.replace(chr(92), chr(92)+chr(92))}")
-        # Use Windows.Media.Ocr for built-in OCR
-        [Windows.Globalization.Language, Windows.Globalization, ContentType = WindowsRuntime] > $null
-        [Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType = WindowsRuntime] > $null
-        [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType = WindowsRuntime] > $null
-        [Windows.Storage.Streams.InMemoryRandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime] > $null
+        if not os.path.exists(target):
+            return {"ok": False, "error": f"文件不存在: {target}"}
 
-        $stream = New-Object Windows.Storage.Streams.InMemoryRandomAccessStream
-        $encoder = [Windows.Graphics.Imaging.BitmapEncoder]::CreateAsync([Windows.Graphics.Imaging.BitmapEncoder]::PngEncoderId(), $stream).GetAwaiter().GetResult()
-        $encoder.SetSoftwareBitmap([Windows.Graphics.Imaging.SoftwareBitmap]::CreateCopyFromBuffer(
-            [Windows.Security.Cryptography.CryptographicBuffer]::CreateFromByteArray((
-                Get-Content "{target.replace(chr(92), chr(92)+chr(92))}" -Encoding Byte
-            )), [Windows.Graphics.Imaging.BitmapPixelFormat]::Rgba8, $bmp.Width, $bmp.Height
-        ))
-        $encoder.FlushAsync().GetAwaiter().GetResult()
-        $stream.Seek(0) > $null
-        $decoder = [Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream).GetAwaiter().GetResult()
-        $sb = $decoder.GetSoftwareBitmapAsync().GetAwaiter().GetResult()
-        $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
-        if (-not $engine) {{ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage("zh-Hans") }}
-        if (-not $engine) {{ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage("en") }}
-        $result = $engine.RecognizeAsync($sb).GetAwaiter().GetResult()
-        $text = ($result.Lines | ForEach-Object {{ ($_.Words | ForEach-Object {{ $_.Text }}) -join " " }}) -join "`n"
-        $bmp.Dispose()
-        $text
-        '''
-        result = subprocess.run(["powershell", "-Command", ps],
-                               capture_output=True, text=True, timeout=30,
-                               creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-        text = result.stdout.strip()
+        text = ""
+
+        # 1) Tesseract (best Chinese support)
+        try:
+            import shutil as _sh
+            tess = _sh.which("tesseract")
+            if tess:
+                r = subprocess.run([tess, target, "stdout", "-l", "chi_sim+eng"],
+                                   capture_output=True, text=True, timeout=30,
+                                   creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                if r.stdout.strip():
+                    text = r.stdout.strip()
+        except:
+            pass
+
+        # 2) Windows built-in OCR
         if not text:
-            # Fallback: Tesseract if installed
             try:
-                import subprocess as sp
-                r2 = sp.run(["tesseract", target, "stdout", "-l", "chi_sim+eng"],
-                           capture_output=True, text=True, timeout=30)
+                safe_path = target.replace('\\', '\\\\')
+                ps = f'''
+                Add-Type -AssemblyName System.Drawing | Out-Null
+                $bmp = [System.Drawing.Bitmap]::FromFile("{safe_path}")
+                $w = $bmp.Width; $h = $bmp.Height
+                $data = $bmp.LockBits([System.Drawing.Rectangle]::new(0,0,$w,$h), [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+                $bytes = [byte[]]::new($data.Stride * $h)
+                [System.Runtime.InteropServices.Marshal]::Copy($data.Scan0, $bytes, 0, $bytes.Length)
+                $bmp.UnlockBits($data); $bmp.Dispose()
+
+                [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType = WindowsRuntime] | Out-Null
+                [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Graphics.Imaging, ContentType = WindowsRuntime] | Out-Null
+                [Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType = WindowsRuntime] | Out-Null
+
+                $sb = [Windows.Graphics.Imaging.SoftwareBitmap]::CreateCopyFromBuffer(
+                    [Windows.Security.Cryptography.CryptographicBuffer]::CreateFromByteArray($bytes),
+                    [Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8, $w, $h)
+                $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+                if (-not $engine) {{ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage("zh-Hans") }}
+                if (-not $engine) {{ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage("en") }}
+                if ($engine) {{
+                    $result = $engine.RecognizeAsync($sb).GetAwaiter().GetResult()
+                    ($result.Lines | ForEach-Object {{ ($_.Words | ForEach-Object {{ $_.Text }}) -join " " }}) -join "`n"
+                }}
+                '''
+                r2 = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                                   capture_output=True, text=True, timeout=30,
+                                   creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
                 if r2.stdout.strip():
-                    text = r2.stdout.strip()
+                    text = r2.stdout.strip()[:10000]
             except:
                 pass
+
+        if not text:
+            return {"ok": True, "text": "", "source": target, "note": "no text detected or OCR engine unavailable"}
+
         return {"ok": True, "text": text[:10000], "source": target}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -688,51 +702,47 @@ def tool_launch_app(app_path: str, args: str = ""):
 
 
 def tool_get_volume():
-    """获取系统音量"""
+    """获取系统音量 (0-100)，使用 winmm waveOut API"""
     try:
         ps = '''
-        Add-Type -AssemblyName System.Windows.Forms
-        [System.Windows.Forms.SendKeys]::SendWait("")
-        Add-Type -TypeDefinition @"
-        using System;
-        using System.Runtime.InteropServices;
-        public class Audio {
-            [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr hWnd, int Msg, IntPtr wParam, IntPtr lParam);
-            [DllImport("user32.dll")] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
-        }
-"@
-        [System.Math]::Round(([Audio]::SendMessageW([Audio]::FindWindow("Shell_TrayWnd", $null), 0x0319, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64() / 65535.0) * 100)
+        Add-Type -Name Win32 -Namespace Audio -MemberDefinition @"
+        [DllImport("winmm.dll")] public static extern int waveOutGetVolume(int id, out uint vol);
+"@ | Out-Null
+        $vol = 0
+        $null = [Audio.Win32]::waveOutGetVolume(0, [ref]$vol)
+        $left = $vol -band 0xFFFF
+        $right = ($vol -shr 16) -band 0xFFFF
+        Write-Host ([int](($left + $right) / 2 * 100 / 65535))
         '''
-        r = subprocess.run(["powershell", "-Command", ps],
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
                           capture_output=True, text=True, timeout=5,
-                          creationflags=subprocess.CREATE_NO_WINDOW)
-        vol = r.stdout.strip()
-        if vol:
-            return {"ok": True, "volume": int(float(vol))}
+                          creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        lines = [l.strip() for l in r.stdout.strip().split('\n') if l.strip().isdigit()]
+        if lines:
+            return {"ok": True, "volume": int(lines[-1])}
         return {"ok": False, "error": "Could not read volume"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
 def tool_set_volume(level: int):
-    """设置系统音量 (0-100)"""
+    """设置系统音量 (0-100)，使用 winmm waveOut API"""
     try:
         level = max(0, min(100, level))
-        import ctypes
-        VK_VOLUME_MUTE = 0xAD
-        VK_VOLUME_DOWN = 0xAE
-        VK_VOLUME_UP = 0xAF
-        KEYEVENTF_KEYUP = 0x0002
-
-        # Mute then set via key simulation
-        # First: set to 0 by sending vol down 50 times, then vol up N times
-        for _ in range(50):
-            ctypes.windll.user32.keybd_event(VK_VOLUME_DOWN, 0, 0, 0)
-            ctypes.windll.user32.keybd_event(VK_VOLUME_DOWN, 0, KEYEVENTF_KEYUP, 0)
-        for _ in range(min(level // 2, 50)):
-            ctypes.windll.user32.keybd_event(VK_VOLUME_UP, 0, 0, 0)
-            ctypes.windll.user32.keybd_event(VK_VOLUME_UP, 0, KEYEVENTF_KEYUP, 0)
-        return {"ok": True, "volume": level}
+        val = int(level / 100 * 65535)
+        val_hex = val | (val << 16)  # both channels
+        ps = f'''
+        Add-Type -Name Win32 -Namespace Audio -MemberDefinition @"
+        [DllImport("winmm.dll")] public static extern int waveOutSetVolume(int id, uint vol);
+"@ | Out-Null
+        $null = [Audio.Win32]::waveOutSetVolume(0, {val_hex})
+        '''
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                          capture_output=True, text=True, timeout=5,
+                          creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        if r.returncode == 0:
+            return {"ok": True, "volume": level}
+        return {"ok": False, "error": r.stderr.strip()[:200]}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -820,6 +830,8 @@ def tool_delete_file(path: str, permanent: bool = False):
     path_check = _sandbox_path(path)
     if not path_check["ok"]:
         return path_check
+    if not os.path.exists(path):
+        return {"ok": False, "error": f"文件不存在: {path}"}
     try:
         import shutil
         if os.path.isdir(path):
