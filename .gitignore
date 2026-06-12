@@ -1,0 +1,37 @@
+# Secrets
+.model_keys.json
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Tauri / Rust
+ai-suite-tauri/src-tauri/target/
+ai-suite-tauri/node_modules/
+ai-suite-tauri/dist/
+
+# Build outputs
+AI_Suite/_internal/
+AI_Suite/static/
+build/
+dist/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
+/tmp/
+
+# Backup
+*.old
+*.bak
