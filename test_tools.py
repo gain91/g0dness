@@ -154,6 +154,10 @@ def test_inverted(name, fn, *args, **kwargs):
         print(f"  CRASH {name}: {e}")
 test_inverted("kill_process_fake", tools.tool_kill_process, "nonexistent_process_12345", "name")
 test("launch_app_calc", tools.tool_launch_app, "calc")
+# Clean up launched calc windows
+import subprocess as _sp
+_sp.run(["taskkill", "/f", "/im", "calculator.exe"], capture_output=True, timeout=5,
+        creationflags=_sp.CREATE_NO_WINDOW if os.name == "nt" else 0)
 test("window_control", tools.tool_window_control, "Program Manager", "focus")
 
 # Visual Targeting Tests
