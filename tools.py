@@ -103,19 +103,12 @@ def tool_shell(command, cwd=None):
 
 def tool_clipboard_read():
     try:
-        import tkinter as tk
-        root = tk.Tk(); root.withdraw()
-        text = root.clipboard_get()
-        root.destroy()
-        return {"ok": True, "text": text[:10000]}
-    except:
-        try:
-            result = subprocess.run(["powershell", "-Command", "Get-Clipboard"],
-                                    capture_output=True, text=True, timeout=5,
-                                    creationflags=subprocess.CREATE_NO_WINDOW)
-            return {"ok": True, "text": result.stdout[:10000]}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        result = subprocess.run(["powershell", "-NoProfile", "-Command", "Get-Clipboard"],
+                                capture_output=True, text=True, timeout=5,
+                                creationflags=subprocess.CREATE_NO_WINDOW)
+        return {"ok": True, "text": result.stdout[:10000]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 def tool_clipboard_write(text):
     try:
