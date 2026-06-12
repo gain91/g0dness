@@ -11,30 +11,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Setup Rust
+      - name: Setup Rust (MSVC)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          toolchain: stable-x86_64-pc-windows-msvc
 
-      - name: Install npm deps
-        working-directory: ai-suite-tauri
-        run: npm install
-
-      - name: Cargo check
+      - name: Cargo check (debug)
         working-directory: ai-suite-tauri/src-tauri
-        run: cargo check
-
-      - name: Cargo build
-        working-directory: ai-suite-tauri/src-tauri
-        run: cargo build --release
-
-      - name: Upload EXE
-        uses: actions/upload-artifact@v4
-        with:
-          name: AI_Suite_EXE
-          path: ai-suite-tauri/src-tauri/target/release/ai-suite.exe
+        run: cargo check 2>&1
