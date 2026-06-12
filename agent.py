@@ -1,13 +1,43 @@
 """
-AI Suite — Agent Core (v3.0)
+AI Suite — Agent Core (v4.0)
 ReAct 循环：思考→工具调用→观察→重复
 支持 Ollama 本地 / DeepSeek V4 / OpenRouter 云端
+v4.0: RAG 记忆 + 插件系统 + MCP 客户端 + 邮件工具
 """
 import json
 import urllib.request as ur
 from typing import Generator, Dict, Any, List, Optional
 import tools
 import hw_monitor
+
+# v4.0 modules (optional)
+try:
+    from rag_memory import rag as rag_mem
+    HAS_RAG = True
+except ImportError:
+    HAS_RAG = False
+    rag_mem = None
+
+try:
+    from plugin_manager import pm
+    HAS_PLUGINS = True
+except ImportError:
+    HAS_PLUGINS = False
+    pm = None
+
+try:
+    from mcp_client import mcp as mcp_client
+    HAS_MCP_CLIENT = True
+except ImportError:
+    HAS_MCP_CLIENT = False
+    mcp_client = None
+
+try:
+    from email_tools import register_email_tools, HAS_OUTLOOK
+    if HAS_OUTLOOK:
+        register_email_tools()
+except ImportError:
+    pass
 
 # ═══════ 工具格式转换 ═══════
 
@@ -455,6 +485,13 @@ class Agent:
         sys_content = AGENT_SYSTEM_FALLBACK if is_fallback else AGENT_SYSTEM
         if system:
             sys_content = sys_content + "\n\n用户上下文: " + system
+        if HAS_RAG:
+            try:
+                rag_ctx = rag_mem.build_context(task, max_tokens=1500)
+                if rag_ctx:
+                    sys_content = sys_content + "\n\n" + rag_ctx
+            except:
+                pass
 
         self.messages = [
             {"role": "system", "content": sys_content},
@@ -627,6 +664,112 @@ def register_routes(app):
 
         health["available"] = health["total"] - len(health["unavailable"])
         return health
+
+    # ═══════ v4.0 Routes: RAG, Plugins, MCP, Email ═══════
+
+    @app.get("/api/rag/search")
+    async def api_rag_search(q: str = "", top_k: int = 5):
+        try:
+            from local_rag import local_rag as lr
+            results = lr.search(q, top_k)
+            return {"ok": True, "results": results}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @app.post("/api/rag/index")
+    async def api_rag_index(request: Request):
+        try:
+            data = await request.json()
+            path = data.get("path", os.path.expanduser("~/Documents"))
+            from local_rag import local_rag as lr
+            result = lr.index_directory(path)
+            return result
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @app.get("/api/rag/stats")
+    async def api_rag_stats():
+        try:
+            from local_rag import local_rag as lr
+            return {"ok": True, "stats": lr.stats()}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @app.get("/api/plugins")
+    async def api_plugins():
+        try:
+            from plugin_manager import pm
+            return {"ok": True, "plugins": pm.list_plugins(), "available": pm.discover()}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @app.post("/api/plugins/{name}/load")
+    async def api_plugin_load(name: str):
+        try:
+            from plugin_manager import pm
+            ok = pm.load(name)
+            return {"ok": ok, "name": name}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @app.post("/api/plugins/{name}/unload")
+    async def api_plugin_unload(name: str):
+        try:
+            from plugin_manager import pm
+            pm.unload(name)
+            return {"ok": True, "name": name}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @app.post("/api/mcp/connect")
+    async def api_mcp_connect(request: Request):
+        try:
+            data = await request.json()
+            name = data.get("name", "")
+            command = data.get("command", "")
+            url = data.get("url", "")
+            if command:
+                ok = mcp_client.connect_stdio(name, command)
+            elif url:
+                ok = mcp_client.connect_sse(name, url)
+            else:
+                return {"ok": False, "error": "Need command or url"}
+            return {"ok": ok, "name": name}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @app.get("/api/mcp/servers")
+    async def api_mcp_servers():
+        try:
+            return {"ok": True, "servers": mcp_client.server_status(),
+                    "tools": len(mcp_client.list_tools())}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @app.get("/api/rag/memory")
+    async def api_rag_memory(query: str = "", action: str = "recall"):
+        try:
+            if action == "recall" and query:
+                results = rag_mem.recall(query)
+                return {"ok": True, "results": [{k: str(v) for k, v in r.items()} for r in results]}
+            elif action == "stats":
+                return {"ok": True, "stats": rag_mem.stats()}
+            return {"ok": False, "error": "Need query for recall, or action=stats"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    @app.post("/api/rag/memory")
+    async def api_rag_memory_store(request: Request):
+        try:
+            data = await request.json()
+            content = data.get("content", "")
+            category = data.get("category", "general")
+            if content:
+                rag_mem.remember(content, category)
+                return {"ok": True}
+            return {"ok": False, "error": "Need content"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
 
 # ═══════ CLI ═══════

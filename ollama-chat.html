@@ -1640,6 +1640,34 @@ async function showDashboard() {
     html += '</p>';
   } catch(e) { html += '<hr><p>🔧 工具健康: ❌ 编排器未连接</p>'; }
 
+  // v4.0: RAG Memory
+  try {
+    let r = await fetch(ORCH_API + '/api/rag/memory?action=stats');
+    let d = await r.json();
+    if (d.ok) html += `<p>🧠 RAG 记忆: <b>${d.stats.total||0}</b> 条</p>`;
+  } catch(e) {}
+
+  // v4.0: Local RAG Index
+  try {
+    let r = await fetch(ORCH_API + '/api/rag/stats');
+    let d = await r.json();
+    if (d.ok) html += `<p>📚 文档索引: <b>${d.stats.documents||0}</b> 文件 · <b>${d.stats.chunks||0}</b> 片段</p>`;
+  } catch(e) {}
+
+  // v4.0: Plugins
+  try {
+    let r = await fetch(ORCH_API + '/api/plugins');
+    let d = await r.json();
+    if (d.ok) html += `<p>🔌 插件: <b>${d.plugins?.length||0}</b> 已加载 · <b>${d.available?.length||0}</b> 可用</p>`;
+  } catch(e) {}
+
+  // v4.0: MCP Servers
+  try {
+    let r = await fetch(ORCH_API + '/api/mcp/servers');
+    let d = await r.json();
+    if (d.ok) html += `<p>🌍 MCP 服务器: <b>${d.servers?.length||0}</b> 连接 · <b>${d.tools||0}</b> 外部工具</p>`;
+  } catch(e) {}
+
   // Models
   try {
     let r = await fetch(ORCH_API + '/api/models');
