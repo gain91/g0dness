@@ -1,0 +1,11 @@
+{
+  "name": "ai-suite-tauri",
+  "version": "4.0.0",
+  "private": true,
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/cli": "^2.11.2"
+  }
+}
