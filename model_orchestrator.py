@@ -475,21 +475,22 @@ async def api_chat_stream(request: Request):
     prompt = data.get("prompt", "").strip()
     force_model = data.get("model")
     submodel = data.get("submodel", "claude")
+    system = data.get("system", "")
 
     async def generate():
         try:
             if force_model == "deepseek":
-                for token in stream_deepseek(prompt):
+                for token in stream_deepseek(prompt, system=system):
                     yield f"data: {json.dumps({'token': token, 'model': 'deepseek-v4-pro'}, ensure_ascii=False)}\n\n"
             elif force_model and force_model in OPENROUTER_MODELS:
-                for token in stream_openrouter(prompt, submodel=force_model):
+                for token in stream_openrouter(prompt, system=system, submodel=force_model):
                     yield f"data: {json.dumps({'token': token, 'model': force_model}, ensure_ascii=False)}\n\n"
             elif force_model and force_model.startswith("ollama:"):
                 ollama_model = force_model.split(":", 1)[1]
-                for token in stream_ollama(prompt, model_name=ollama_model):
+                for token in stream_ollama(prompt, system=system, model_name=ollama_model):
                     yield f"data: {json.dumps({'token': token, 'model': ollama_model}, ensure_ascii=False)}\n\n"
             elif force_model == "ollama" or not force_model:
-                for token in stream_ollama(prompt):
+                for token in stream_ollama(prompt, system=system):
                     yield f"data: {json.dumps({'token': token, 'model': 'ollama'}, ensure_ascii=False)}\n\n"
             else:
                 result = chat(prompt, force_model=force_model, submodel=submodel)
