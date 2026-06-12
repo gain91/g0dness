@@ -10,14 +10,19 @@
     "beforeBuildCommand": ""
   },
   "app": {
-    "windows": [{
-      "title": "AI Suite - g0dness",
-      "width": 1100,
-      "height": 800,
-      "minWidth": 800,
-      "minHeight": 600,
-      "resizable": true
-    }]
+    "windows": [
+      {
+        "title": "AI Suite - g0dness",
+        "width": 1100,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
   },
   "bundle": {
     "active": true,
