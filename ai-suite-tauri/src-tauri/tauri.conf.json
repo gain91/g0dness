@@ -19,7 +19,7 @@
       "resizable": true
     }],
     "trayIcon": {
-      "iconPath": "icons/icon.ico",
+      "iconPath": "icons/icon.png",
       "tooltip": "AI Suite",
       "menuOnLeftClick": false
     }
