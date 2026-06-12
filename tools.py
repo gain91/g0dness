@@ -244,29 +244,29 @@ def tool_run_python(code, timeout=10):
 
 
 # ─── Register all tools ───
-register("read_file", "Read a file's contents", tool_read_file,
-         {"path": {"type": "string", "description": "Absolute file path"}})
-register("list_dir", "List directory contents", tool_list_dir,
-         {"path": {"type": "string", "description": "Directory path"}})
-register("write_file", "Write content to a file", tool_write_file,
+register("read_file", "读取文件内容 — Read a file", tool_read_file,
+         {"path": {"type": "string", "description": "文件绝对路径"}})
+register("list_dir", "列出目录内容 — List directory", tool_list_dir,
+         {"path": {"type": "string", "description": "目录路径"}})
+register("write_file", "写入内容到文件 — Write to file", tool_write_file,
          {"path": {"type": "string"}, "content": {"type": "string"}})
-register("find_files", "Recursively search for files by name pattern", tool_find_files,
+register("find_files", "递归搜索匹配文件 — Find files by pattern", tool_find_files,
          {"directory": {"type": "string"}, "pattern": {"type": "string", "optional": True},
           "max_results": {"type": "integer", "optional": True}})
-register("shell", "Execute a shell command (30s timeout)", tool_shell,
+register("shell", "执行 Shell 命令(30秒超时) — Run shell command", tool_shell,
          {"command": {"type": "string"}, "cwd": {"type": "string", "optional": True}})
-register("run_python", "Execute Python code in isolation (for calculations, data processing)", tool_run_python,
+register("run_python", "隔离执行 Python 代码 — Run Python sandboxed", tool_run_python,
          {"code": {"type": "string"}, "timeout": {"type": "number", "optional": True}})
-register("clipboard_read", "Read text from clipboard", tool_clipboard_read, {})
-register("clipboard_write", "Write text to clipboard", tool_clipboard_write,
+register("clipboard_read", "读取剪贴板文本 — Read clipboard", tool_clipboard_read, {})
+register("clipboard_write", "写入文本到剪贴板 — Write clipboard", tool_clipboard_write,
          {"text": {"type": "string"}})
-register("web_fetch", "Fetch a web page content", tool_web_fetch,
+register("web_fetch", "抓取网页内容 — Fetch web page", tool_web_fetch,
          {"url": {"type": "string"}})
-register("web_search", "Search the web via DuckDuckGo", tool_web_search,
+register("web_search", "DuckDuckGo 网页搜索 — Web search", tool_web_search,
          {"query": {"type": "string"}})
-register("open_browser", "Open a URL in the default browser", tool_open_browser,
+register("open_browser", "默认浏览器打开 URL — Open browser", tool_open_browser,
          {"url": {"type": "string"}})
-register("screenshot", "Take a screenshot and save to file", tool_screenshot,
+register("screenshot", "屏幕截图保存为文件 — Take screenshot", tool_screenshot,
          {"path": {"type": "string", "optional": True}})
 
 def tool_ocr(image_path=None):
@@ -361,10 +361,10 @@ def tool_ocr(image_path=None):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-register("ocr", "Extract text from an image using OCR (Windows built-in)", tool_ocr,
-         {"image_path": {"type": "string", "optional": True, "description": "Image file path, omit to screenshot first"}})
+register("ocr", "图片文字识别(OCR) — Extract text from image", tool_ocr,
+         {"image_path": {"type": "string", "optional": True, "description": "图片路径，省略则先截图"}})
 
-# ─── Visual Targeting (v4.0) ───
+# ─── Desktop Control Tools (v3.1) ───
 
 def tool_screenshot_find(text_query: str):
     """截图 + OCR 查找文字位置，返回坐标可用于点击"""
@@ -452,11 +452,10 @@ def tool_click_text(text_query: str):
     return {"ok": True, "text": m["text"], "x": m["x"], "y": m["y"],
             "click_result": click_r, "total_matches": len(matches)}
 
-
-register("screenshot_find", "Take screenshot and find text location for clicking", tool_screenshot_find,
-         {"text_query": {"type": "string", "description": "Text to find on screen"}})
-register("click_text", "Find text on screen and click it automatically", tool_click_text,
-         {"text_query": {"type": "string", "description": "Text to find and click"}})
+register("screenshot_find", "截图查找文字位置 — Find text on screen", tool_screenshot_find,
+         {"text_query": {"type": "string", "description": "要查找的文字"}})
+register("click_text", "查找屏幕文字并自动点击 — Find and click text", tool_click_text,
+         {"text_query": {"type": "string", "description": "要查找并点击的文字"}})
 
 # ─── Desktop Control Tools (v3.1) ───
 
@@ -586,17 +585,17 @@ def tool_get_mouse_pos():
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-register("click", "Click mouse at (x, y)", tool_click,
+register("click", "鼠标点击(x,y) — Click at position", tool_click,
          {"x": {"type": "integer"}, "y": {"type": "integer"}, "button": {"type": "string", "optional": True}})
-register("move_mouse", "Move mouse to (x, y) without clicking", tool_move_mouse,
+register("move_mouse", "移动鼠标到(x,y)不点击 — Move mouse", tool_move_mouse,
          {"x": {"type": "integer"}, "y": {"type": "integer"}})
-register("mouse_pos", "Get current mouse position", tool_get_mouse_pos, {})
-register("type_text", "Simulate typing text via keyboard", tool_type_text,
+register("mouse_pos", "获取当前鼠标坐标 — Get mouse position", tool_get_mouse_pos, {})
+register("type_text", "模拟键盘输入文字 — Type text", tool_type_text,
          {"text": {"type": "string"}, "interval": {"type": "number", "optional": True}})
-register("press_key", "Press a key (enter, escape, tab, f1-f12, arrows...)", tool_press_key,
+register("press_key", "按下一个键(enter/escape/tab/F1-F12/方向键) — Press key", tool_press_key,
          {"key": {"type": "string"}})
-register("get_windows", "List all visible window titles", tool_get_windows, {})
-register("focus_window", "Focus a window by title (partial match)", tool_focus_window,
+register("get_windows", "列出所有可见窗口标题 — List windows", tool_get_windows, {})
+register("focus_window", "根据标题聚焦窗口(模糊匹配) — Focus window", tool_focus_window,
          {"title_match": {"type": "string"}})
 
 # ─── Document Generation Tools ───
@@ -701,9 +700,9 @@ def tool_create_dxf(filename: str, entities_json: str = "[]", units: str = "mm")
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-register("create_pptx", "Generate a PowerPoint presentation from JSON slide data", tool_create_pptx,
+register("create_pptx", "生成 PowerPoint 演示文稿 — Generate PPTX", tool_create_pptx,
          {"title": {"type": "string"}, "slides_json": {"type": "string"}, "output_path": {"type": "string", "optional": True}})
-register("create_dxf", "Generate a CAD DXF drawing from JSON entity data", tool_create_dxf,
+register("create_dxf", "生成 CAD DXF 图纸 — Generate DXF drawing", tool_create_dxf,
          {"filename": {"type": "string"}, "entities_json": {"type": "string"}, "units": {"type": "string", "optional": True}})
 
 # ─── System & Desktop Management Tools (v3.2) ───
@@ -975,23 +974,23 @@ def tool_delete_file(path: str, permanent: bool = False):
         return {"ok": False, "error": str(e)}
 
 
-register("system_info", "Get system information (CPU, RAM, disk, battery)", tool_system_info, {})
-register("list_processes", "List running processes, optionally filter by name", tool_list_processes,
+register("system_info", "获取系统信息(CPU/内存/磁盘/电池) — System info", tool_system_info, {})
+register("list_processes", "列出运行进程(可选名称过滤) — List processes", tool_list_processes,
          {"filter_name": {"type": "string", "optional": True}})
-register("kill_process", "Kill a process by name or PID", tool_kill_process,
+register("kill_process", "终止进程(按名称或PID) — Kill process", tool_kill_process,
          {"target": {"type": "string"}, "by": {"type": "string", "optional": True}})
-register("launch_app", "Launch an application by path or name (e.g. notepad, calc)", tool_launch_app,
+register("launch_app", "启动应用程序(路径或名称如notepad/calc) — Launch app", tool_launch_app,
          {"app_path": {"type": "string"}, "args": {"type": "string", "optional": True}})
-register("get_volume", "Get current system volume level (0-100)", tool_get_volume, {})
-register("set_volume", "Set system volume level (0-100)", tool_set_volume,
+register("get_volume", "获取系统音量(0-100) — Get volume", tool_get_volume, {})
+register("set_volume", "设置系统音量(0-100) — Set volume", tool_set_volume,
          {"level": {"type": "integer"}})
-register("window_control", "Control a window: focus/minimize/maximize/restore/close", tool_window_control,
+register("window_control", "窗口操控(聚焦/最小化/最大化/关闭) — Window control", tool_window_control,
          {"title_match": {"type": "string"}, "action": {"type": "string", "optional": True}})
-register("copy_file", "Copy a file (sandbox-restricted to safe paths)", tool_copy_file,
+register("copy_file", "复制文件(沙箱限制) — Copy file", tool_copy_file,
          {"src": {"type": "string"}, "dst": {"type": "string"}})
-register("move_file", "Move/rename a file (sandbox-restricted to safe paths)", tool_move_file,
+register("move_file", "移动/重命名文件(沙箱限制) — Move file", tool_move_file,
          {"src": {"type": "string"}, "dst": {"type": "string"}})
-register("delete_file", "Delete a file or folder (recycle bin by default, permanent if set)", tool_delete_file,
+register("delete_file", "删除文件/文件夹(默认回收站) — Delete file", tool_delete_file,
          {"path": {"type": "string"}, "permanent": {"type": "boolean", "optional": True}})
 
 # ─── Video Editing Tools (v3.3) ───
@@ -1334,45 +1333,45 @@ def tool_video_crop(video_path: str, output_path: str, x: int = 0, y: int = 0,
     return r
 
 
-register("video_info", "Get video metadata: duration, resolution, codec, bitrate", tool_video_info,
+register("video_info", "视频元信息(时长/分辨率/编码) — Video metadata", tool_video_info,
          {"video_path": {"type": "string"}})
-register("video_trim", "Trim/cut a video segment", tool_video_trim,
+register("video_trim", "裁剪视频片段 — Trim video", tool_video_trim,
          {"video_path": {"type": "string"}, "output_path": {"type": "string"},
           "start": {"type": "string", "optional": True}, "duration": {"type": "string", "optional": True},
           "end": {"type": "string", "optional": True}})
-register("video_concat", "Concatenate/join multiple videos", tool_video_concat,
-         {"video_paths": {"type": "string", "description": "JSON array of file paths"},
+register("video_concat", "拼接多个视频 — Concatenate videos", tool_video_concat,
+         {"video_paths": {"type": "string", "description": "文件路径 JSON 数组"},
           "output_path": {"type": "string"}})
-register("video_resize", "Resize/scale video resolution", tool_video_resize,
+register("video_resize", "调整视频分辨率 — Resize video", tool_video_resize,
          {"video_path": {"type": "string"}, "output_path": {"type": "string"},
           "width": {"type": "integer", "optional": True}, "height": {"type": "integer", "optional": True}})
-register("video_extract_audio", "Extract audio track from video to mp3/aac/wav", tool_video_extract_audio,
+register("video_extract_audio", "提取视频音频(mp3/aac/wav) — Extract audio", tool_video_extract_audio,
          {"video_path": {"type": "string"}, "output_path": {"type": "string", "optional": True},
           "format": {"type": "string", "optional": True}})
-register("video_replace_audio", "Replace video audio track with new audio file", tool_video_replace_audio,
+register("video_replace_audio", "替换视频音轨 — Replace audio track", tool_video_replace_audio,
          {"video_path": {"type": "string"}, "audio_path": {"type": "string"}, "output_path": {"type": "string"}})
-register("video_speed", "Change video playback speed (0.5=half, 2.0=double)", tool_video_speed,
+register("video_speed", "调整播放速度(0.5半速/2.0双倍) — Change speed", tool_video_speed,
          {"video_path": {"type": "string"}, "output_path": {"type": "string"},
           "speed": {"type": "number", "optional": True}})
-register("video_to_gif", "Convert video segment to animated GIF", tool_video_to_gif,
+register("video_to_gif", "视频转 GIF 动图 — Convert to GIF", tool_video_to_gif,
          {"video_path": {"type": "string"}, "output_path": {"type": "string", "optional": True},
           "start": {"type": "string", "optional": True}, "duration": {"type": "number", "optional": True},
           "width": {"type": "integer", "optional": True}, "fps": {"type": "integer", "optional": True}})
-register("video_add_text", "Overlay text on video", tool_video_add_text,
+register("video_add_text", "视频叠加文字 — Overlay text", tool_video_add_text,
          {"video_path": {"type": "string"}, "text": {"type": "string"}, "output_path": {"type": "string"},
           "position": {"type": "string", "optional": True}, "font_size": {"type": "integer", "optional": True},
           "font_color": {"type": "string", "optional": True}})
-register("video_compress", "Compress video to reduce file size (CRF-based)", tool_video_compress,
+register("video_compress", "压缩视频减小体积(CRF) — Compress video", tool_video_compress,
          {"video_path": {"type": "string"}, "output_path": {"type": "string"},
           "crf": {"type": "integer", "optional": True}, "preset": {"type": "string", "optional": True}})
-register("video_convert", "Convert video format/codec", tool_video_convert,
+register("video_convert", "转换视频格式/编码 — Convert codec", tool_video_convert,
          {"video_path": {"type": "string"}, "output_path": {"type": "string"},
           "vcodec": {"type": "string", "optional": True}, "acodec": {"type": "string", "optional": True}})
-register("video_extract_frames", "Extract video frames as images", tool_video_extract_frames,
+register("video_extract_frames", "提取视频帧为图片 — Extract frames", tool_video_extract_frames,
          {"video_path": {"type": "string"}, "output_dir": {"type": "string", "optional": True},
           "fps": {"type": "number", "optional": True}, "start": {"type": "string", "optional": True},
           "duration": {"type": "number", "optional": True}, "width": {"type": "integer", "optional": True}})
-register("video_crop", "Crop a region from video", tool_video_crop,
+register("video_crop", "裁剪视频画面区域 — Crop video", tool_video_crop,
          {"video_path": {"type": "string"}, "output_path": {"type": "string"},
           "x": {"type": "integer", "optional": True}, "y": {"type": "integer", "optional": True},
           "width": {"type": "integer", "optional": True}, "height": {"type": "integer", "optional": True}})
