@@ -5,12 +5,19 @@ AutoGen 多模型编排器
 import os, json, asyncio
 from typing import Optional
 
-# 放 API Key 的文件
-ENV_FILE = "C:/Users/86538/.model_keys.json"
-
+# API Key 加载 — 优先加密 vault，降级明文
 def load_keys():
-    if os.path.exists(ENV_FILE):
-        with open(ENV_FILE) as f:
+    try:
+        from key_vault import load_keys as _load
+        keys = _load()
+        if keys:
+            return keys
+    except ImportError:
+        pass
+    # Fallback: plaintext file
+    env_file = os.path.expanduser("~/.model_keys.json")
+    if os.path.exists(env_file):
+        with open(env_file) as f:
             return json.load(f)
     return {}
 

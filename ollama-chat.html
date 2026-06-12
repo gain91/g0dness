@@ -283,6 +283,26 @@ body {
 
 /* ── Selection ── */
 ::selection { background:var(--accent-light); color:var(--accent); }
+
+/* ── Command Palette (Ctrl+K) ── */
+.cmd-palette-overlay { position:fixed; inset:0; background:rgba(0,0,0,.5); backdrop-filter:blur(4px);
+  -webkit-backdrop-filter:blur(4px); z-index:99999; display:flex; justify-content:center; padding-top:15vh;
+  animation:fadeIn .15s ease; }
+.cmd-palette { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg);
+  width:560px; max-width:92vw; box-shadow:0 20px 60px rgba(0,0,0,.2); overflow:hidden; }
+.cmd-palette input { width:100%; background:var(--surface); color:var(--text); border:none; border-bottom:1px solid var(--border);
+  padding:16px 20px; font-size:16px; font-family:inherit; outline:none; }
+.cmd-palette input::placeholder { color:var(--subtle); }
+.cmd-palette .cmd-results { max-height:360px; overflow-y:auto; }
+.cmd-palette .cmd-item { padding:10px 20px; display:flex; align-items:center; gap:12px;
+  cursor:pointer; font-size:13px; transition:var(--transition); border-bottom:1px solid var(--border); }
+.cmd-palette .cmd-item:hover, .cmd-palette .cmd-item.active { background:var(--accent-light); }
+.cmd-palette .cmd-item .cmd-icon { font-size:16px; width:24px; text-align:center; }
+.cmd-palette .cmd-item .cmd-title { font-weight:600; color:var(--text); }
+.cmd-palette .cmd-item .cmd-desc { font-size:11px; color:var(--muted); margin-top:1px; }
+.cmd-palette .cmd-item .cmd-shortcut { margin-left:auto; font-size:10px; color:var(--subtle);
+  background:var(--bg); padding:2px 6px; border-radius:4px; border:1px solid var(--border); }
+@keyframes fadeIn { from{opacity:0} to{opacity:1} }
 </style>
 </head>
 <body>
@@ -1295,7 +1315,92 @@ document.addEventListener('keydown', function(e) {
   if (e.ctrlKey && e.key === '2') { e.preventDefault(); switchMode('image'); }
   if (e.ctrlKey && e.key === '3') { e.preventDefault(); switchMode('video'); }
   if (e.ctrlKey && e.key === '4') { e.preventDefault(); switchMode('agent'); }
+  if ((e.ctrlKey && e.key === 'k') || (e.ctrlKey && e.key === 'K')) { e.preventDefault(); showCommandPalette(); }
 });
+
+// ═══════ Command Palette (Ctrl+K) ═══════
+function showCommandPalette() {
+  const overlay = document.createElement('div');
+  overlay.className = 'cmd-palette-overlay';
+  overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+
+  // Build commands
+  const commands = [
+    {icon:'💬', title:'对话模式', desc:'切换到对话标签', shortcut:'Ctrl+1', action(){switchMode('chat')}},
+    {icon:'🎨', title:'生图模式', desc:'切换到生图标签', shortcut:'Ctrl+2', action(){switchMode('image')}},
+    {icon:'🎬', title:'生视频模式', desc:'切换到生视频标签', shortcut:'Ctrl+3', action(){switchMode('video')}},
+    {icon:'🤖', title:'Agent 模式', desc:'切换到 Agent 标签', shortcut:'Ctrl+4', action(){switchMode('agent')}},
+    {icon:'📝', title:'新建会话', desc:'开始一段新对话', shortcut:'Ctrl+N', action(){newConversation()}},
+    {icon:'📥', title:'导出对话', desc:'导出当前对话为 Markdown', action(){exportConversation()}},
+    {icon:'📊', title:'仪表盘', desc:'查看用量和系统状态', action(){showDashboard()}},
+    {icon:'⏰', title:'定时任务', desc:'管理定时调度', action(){showSchedulerUI()}},
+    {icon:'📦', title:'模型管理', desc:'管理 Ollama 模型', action(){showModelManager()}},
+    {icon:'📱', title:'手机扫码', desc:'生成 LAN 遥控二维码', action(){showQR()}},
+    {icon:'🧠', title:'启动 Claude Code', desc:'打开 Claude Code CLI', action(){fetch(GEN_API+'/api/open_claude')}},
+    {icon:'⚡', title:'启动 Codex', desc:'打开 Codex CLI', action(){fetch(GEN_API+'/api/open_codex')}},
+    {icon:'🎤', title:'语音输入', desc:'开始语音输入', action(){toggleVoice()}},
+    {icon:'🔄', title:'刷新页面', desc:'强制刷新 (防缓存)', action(){location.replace(location.pathname+'?t='+Date.now())}},
+  ];
+
+  // Add tool commands if tools loaded
+  if (allTools.length) {
+    allTools.forEach(t => {
+      commands.push({
+        icon:'🔧', title:t.name, desc:t.description||'', shortcut:t.category||'',
+        action(){ switchMode('agent'); setTimeout(()=>selectTool(t.name),500); overlay.remove(); }
+      });
+    });
+  }
+
+  let filtered = commands;
+  const palette = document.createElement('div');
+  palette.className = 'cmd-palette';
+  palette.innerHTML = `<input placeholder="输入命令或搜索工具..." autofocus oninput="window._cmdFilter(this.value)">`;
+  const results = document.createElement('div');
+  results.className = 'cmd-results';
+  palette.appendChild(results);
+  overlay.appendChild(palette);
+  document.body.appendChild(overlay);
+
+  let activeIdx = 0;
+  window._cmdFilter = function(q) {
+    filtered = commands.filter(c =>
+      c.title.toLowerCase().includes(q.toLowerCase()) ||
+      (c.desc||'').toLowerCase().includes(q.toLowerCase())
+    );
+    activeIdx = 0;
+    renderCmdResults();
+  };
+
+  function renderCmdResults() {
+    results.innerHTML = filtered.slice(0, 30).map((c,i) =>
+      `<div class="cmd-item${i===activeIdx?' active':''}" onclick="this.closest('.cmd-palette-overlay').remove();(${c.action.toString()})()">
+        <span class="cmd-icon">${c.icon}</span>
+        <div style="flex:1;overflow:hidden">
+          <div class="cmd-title">${c.title}</div>
+          ${c.desc?`<div class="cmd-desc">${c.desc}</div>`:''}
+        </div>
+        ${c.shortcut?`<span class="cmd-shortcut">${c.shortcut}</span>`:''}
+      </div>`
+    ).join('');
+  }
+
+  // Keyboard nav
+  palette.querySelector('input').addEventListener('keydown', function(e) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); activeIdx = Math.min(activeIdx+1, filtered.length-1); renderCmdResults(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); activeIdx = Math.max(activeIdx-1, 0); renderCmdResults(); }
+    else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (filtered[activeIdx]) {
+        overlay.remove();
+        filtered[activeIdx].action();
+      }
+    }
+    else if (e.key === 'Escape') { overlay.remove(); }
+  });
+
+  renderCmdResults();
+}
 
 // ═══════ Markdown 渲染 ═══════
 function renderMD(text) {
