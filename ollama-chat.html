@@ -281,6 +281,18 @@ body {
 ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
 ::-webkit-scrollbar-thumb:hover { background:var(--subtle); }
 
+/* ── Persona Selector ── */
+.persona-select { background:var(--accent-light); color:var(--accent); border:1px solid var(--accent);
+  padding:4px 8px; border-radius:14px; font-size:11px; cursor:pointer; font-weight:600; flex-shrink:0; max-width:120px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; transition:var(--transition); }
+.persona-select:hover { background:var(--accent); color:#fff; }
+.persona-select.none { background:var(--input-bg); color:var(--muted); border-color:var(--border); }
+.persona-option { display:flex; justify-content:space-between; align-items:center; padding:8px 14px; cursor:pointer;
+  font-size:12px; border-bottom:1px solid var(--border); transition:var(--transition); }
+.persona-option:hover { background:var(--accent-light); }
+.persona-option .del-persona { color:var(--muted); cursor:pointer; font-size:14px; padding:2px 6px; }
+.persona-option .del-persona:hover { color:#ef4444; }
+
 /* ── Selection ── */
 ::selection { background:var(--accent-light); color:var(--accent); }
 
@@ -345,6 +357,10 @@ body {
     <option value="huihui_ai/qwen3-abliterated:8b">Qwen3 无审查</option>
   </select>
   <span class="model-badge" id="status">就绪</span>
+  <select class="persona-select none" id="personaSelect" onchange="switchPersona()" title="角色预设" style="max-width:100px">
+    <option value="">无角色</option>
+  </select>
+  <button class="theme-btn" onclick="savePersona()" title="保存当前系统提示为角色" style="font-size:11px">💾</button>
   <div class="mode-tabs">
     <button class="mode-tab active" onclick="switchMode('chat')">💬 对话</button>
     <button class="mode-tab" onclick="switchMode('image')">🎨 生图</button>
@@ -563,6 +579,104 @@ function logMessage(role, content) {
   messageLog.push({role, content, tokens, time: Date.now()});
   checkTokenLimit();
 }
+
+// ═══════ Persona System ═══════
+const DEFAULT_PERSONAS = {
+  "friend": {
+    name: "毒舌闺蜜",
+    prompt: `你是我的好朋友，模仿我的闺蜜/死党跟我聊天。严格遵守以下风格：
+
+## 说话方式
+- 极短句，通常2-8个字，不超过20字。能打一个字绝不打两个。
+- 用"呀""哟""哦""吧""嘛"结尾。"行吧""知道啊""不能呀宝子"
+- 微信式语言：单独的"？""？"就是质问，"✌️""行""好！"就是表态
+- 常用口语词：我靠、笑死、确实、哦哦、可以可以、不是
+- 偶尔毒舌，但不真生气。"你要死吧""滚""你有审美吗"是亲昵不是骂人
+- 经常用反问和吐槽来表达关心
+
+## 对我的称呼
+- 多数时候叫"宝子"，偶尔不提称呼直接说话
+
+## 表情包/颜文字
+- 大量使用 [偷笑][捂脸][流泪][调皮][害羞] ——模仿微信自带表情
+- ✌️、？、！作为独立消息发送
+
+## 回复节奏
+- 想到什么说什么，话题跳跃快
+- 没话说就发表情包或"哦哦""行"
+- 不想继续话题就直接"？"或换个话题
+
+## 兴趣爱好
+- 打游戏（瓦罗兰特/Valorant叫"瓦"），刷抖音
+- 体育课、同学、学校日常
+- 喜欢自称好看，会吐槽别人颜值
+
+## 重要
+- 不要长篇大论，回复永远小于20字
+- 不要用"亲爱的""你好呀"等客套话，直接开聊
+- 语气像认识多年的损友，不是礼貌的陌生人
+- 不懂装懂，瞎聊也行`
+  }
+};
+
+let personas = {};
+let activePersona = "";
+let currentSystemPrompt = "";
+
+function loadPersonas() {
+  try {
+    personas = JSON.parse(localStorage.getItem('ai_suite_personas') || '{}');
+  } catch(e) { personas = {}; }
+  // Merge defaults if not present
+  for (let k in DEFAULT_PERSONAS) {
+    if (!personas[k]) personas[k] = DEFAULT_PERSONAS[k];
+  }
+  savePersonas();
+  refreshPersonaSelect();
+}
+
+function savePersonas() {
+  localStorage.setItem('ai_suite_personas', JSON.stringify(personas));
+}
+
+function refreshPersonaSelect() {
+  let sel = document.getElementById('personaSelect');
+  sel.innerHTML = '<option value="">无角色</option>';
+  for (let k in personas) {
+    sel.innerHTML += `<option value="${k}" ${k===activePersona?'selected':''}>${personas[k].name}</option>`;
+  }
+  sel.className = activePersona ? 'persona-select' : 'persona-select none';
+}
+
+function switchPersona() {
+  let key = document.getElementById('personaSelect').value;
+  activePersona = key;
+  currentSystemPrompt = key ? (personas[key]?.prompt || '') : '';
+  refreshPersonaSelect();
+  if (key) {
+    addMsg('system', '🎭 角色: ' + personas[key].name);
+  } else {
+    addMsg('system', '🎭 已取消角色，恢复默认');
+  }
+}
+
+function savePersona() {
+  let key = prompt('角色 ID（英文，如 friend/coworker）:');
+  if (!key) return;
+  let name = prompt('角色名称:');
+  if (!name) return;
+  let prompt = prompt('系统提示词（粘贴完整内容）:', currentSystemPrompt || '');
+  if (!prompt) return;
+  personas[key] = {name, prompt};
+  savePersonas();
+  activePersona = key;
+  currentSystemPrompt = prompt;
+  refreshPersonaSelect();
+  addMsg('system', '💾 已保存角色: ' + name);
+}
+
+// Load personas on startup
+loadPersonas();
 
 function clearTokenState() {
   messageLog = [];
@@ -859,7 +973,7 @@ async function send() {
     const forceModel = chatModel === 'ollama' ? ('ollama:' + model) : orSub;
     const resp = await fetch(ORCH_API + '/api/chat/stream', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({prompt: text, model: forceModel})
+      body: JSON.stringify({prompt: text, model: forceModel, system: currentSystemPrompt})
     });
 
     const reader = resp.body.getReader();
