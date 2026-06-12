@@ -21,24 +21,13 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Install Tauri CLI (Rust)
-        run: cargo install tauri-cli --version "^2"
-
-      - name: Install NSIS
-        run: choco install nsis -y
-
-      - name: Build Tauri
-        run: cargo tauri build
+      - name: Install npm deps
+        run: npm install
         working-directory: ai-suite-tauri
 
-      - name: Upload Installer
-        uses: actions/upload-artifact@v4
+      - name: Build
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          name: AI_Suite_Installer
-          path: ai-suite-tauri/src-tauri/target/release/bundle/nsis/*.exe
-
-      - name: Upload EXE
-        uses: actions/upload-artifact@v4
-        with:
-          name: AI_Suite_EXE
-          path: ai-suite-tauri/src-tauri/target/release/ai-suite.exe
+          projectPath: ai-suite-tauri
