@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>AI Suite v4.1 — 使用手册</title>
+<style>
+@page { size: A4; margin: 20mm; }
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'Segoe UI','Microsoft YaHei',sans-serif; max-width:900px; margin:0 auto; padding:40px 20px;
+  color:#1a1a2e; line-height:1.8; -webkit-font-smoothing:antialiased; }
+h1 { font-size:32px; background:linear-gradient(135deg,#6366f1,#a855f7); -webkit-background-clip:text;
+  -webkit-text-fill-color:transparent; margin-bottom:8px; }
+h2 { font-size:22px; color:#6366f1; margin:32px 0 12px; border-bottom:2px solid #e2e8f0; padding-bottom:6px; }
+h3 { font-size:16px; color:#4f46e5; margin:20px 0 8px; }
+p { margin:8px 0; }
+code { background:#f1f5f9; padding:2px 8px; border-radius:4px; font-size:13px; font-family:'Cascadia Code',Consolas,monospace; }
+pre { background:#0f172a; color:#e2e8f0; padding:16px; border-radius:8px; overflow-x:auto; margin:12px 0; font-size:13px; }
+table { width:100%; border-collapse:collapse; margin:12px 0; }
+th { background:#6366f1; color:#fff; padding:10px 14px; text-align:left; font-size:13px; }
+td { padding:8px 14px; border-bottom:1px solid #e2e8f0; font-size:13px; }
+tr:nth-child(even) td { background:#f8fafc; }
+.shortcut { display:inline-block; background:#eef2ff; color:#4f46e5; padding:2px 10px; border-radius:4px;
+  font-family:monospace; font-size:12px; border:1px solid #c7d2fe; }
+.note { background:#fffbeb; border-left:4px solid #f59e0b; padding:12px 16px; margin:12px 0; border-radius:0 8px 8px 0; }
+.tip { background:#f0fdf4; border-left:4px solid #10b981; padding:12px 16px; margin:12px 0; border-radius:0 8px 8px 0; }
+.warn { background:#fef2f2; border-left:4px solid #ef4444; padding:12px 16px; margin:12px 0; border-radius:0 8px 8px 0; }
+.cover { text-align:center; padding:80px 0; }
+.cover h1 { font-size:48px; }
+.cover .ver { color:#64748b; font-size:20px; margin-top:8px; }
+.cover .desc { color:#94a3b8; margin-top:16px; font-size:16px; }
+.footer { text-align:center; color:#94a3b8; font-size:12px; margin-top:60px; border-top:1px solid #e2e8f0; padding-top:20px; }
+@media print { body { font-size:12px; } h1 { font-size:28px; } h2 { font-size:18px; } }
+</style>
+</head>
+<body>
+
+<div class="cover">
+<h1>AI Suite</h1>
+<div class="ver">v4.1 — 使用手册</div>
+<div class="desc">全自主桌面 AI 套件 · 52 工具 · 4 模式 · 多模型编排</div>
+<p style="color:#94a3b8;margin-top:24px">2026年6月</p>
+</div>
+
+<h2>1. 快速开始</h2>
+
+<h3>1.1 安装启动</h3>
+
+<p><b>方式一：EXE 安装包</b></p>
+<ol>
+  <li>下载 <code>AI_Suite_*_x64-setup.exe</code></li>
+  <li>双击安装，选择安装目录</li>
+  <li>桌面双击 <code>AI Suite</code> 图标启动</li>
+</ol>
+
+<p><b>方式二：命令行</b></p>
+<pre>pip install fastapi uvicorn pillow psutil python-pptx ezdxf
+python gen_web.py &
+python model_orchestrator.py &
+start http://localhost:5000/chat</pre>
+
+<h3>1.2 配置 API Keys</h3>
+<p>创建 <code>~/.model_keys.json</code>：</p>
+<pre>{
+  "openrouter_key": "sk-or-v1-...",
+  "deepseek_key": "sk-...",
+  "volcengine_key": "ark-...",
+  "google_key": "AQ..."
+}</pre>
+<p>（可选）加密存储：<code>python key_vault.py encrypt</code></p>
+
+<h3>1.3 依赖安装</h3>
+<table>
+  <tr><th>依赖</th><th>用途</th><th>安装</th></tr>
+  <tr><td>ffmpeg</td><td>视频编辑 13 工具</td><td>下载解压到 C:\ffmpeg\bin</td></tr>
+  <tr><td>tesseract</td><td>OCR 中文识别</td><td>下载安装 + chi_sim 语言包</td></tr>
+  <tr><td>python-pptx</td><td>生成 PPT 文档</td><td><code>pip install python-pptx</code></td></tr>
+  <tr><td>ezdxf</td><td>生成 CAD 图纸</td><td><code>pip install ezdxf</code></td></tr>
+  <tr><td>pywin32</td><td>Outlook 邮件集成</td><td><code>pip install pywin32</code></td></tr>
+</table>
+
+<h2>2. 界面说明</h2>
+
+<h3>2.1 主界面布局</h3>
+<p>启动后进入 Chat UI，四个标签页切换：</p>
+<table>
+  <tr><th>标签</th><th>快捷键</th><th>功能</th></tr>
+  <tr><td>💬 对话</td><td><span class="shortcut">Ctrl+1</span></td><td>AI 对话，支持本地 Ollama + OpenRouter 云端</td></tr>
+  <tr><td>🎨 生图</td><td><span class="shortcut">Ctrl+2</span></td><td>文字描述生成图片（SDXL/Seedream/云端）</td></tr>
+  <tr><td>🎬 生视频</td><td><span class="shortcut">Ctrl+3</span></td><td>文字/图片生成视频（Seedance/Wan）</td></tr>
+  <tr><td>🤖 Agent</td><td><span class="shortcut">Ctrl+4</span></td><td>自主 Agent，自动调用工具完成任务</td></tr>
+</table>
+
+<h3>2.2 对话模式</h3>
+<p>左上角选择模型来源：<b>本地·免费无限</b>（Ollama）或 <b>云端·多模型</b>（OpenRouter）。</p>
+<p>云端模式可选：DeepSeek V4 Pro / Claude Fable 5 / Sonnet 4.6 / Haiku 4.5 / GPT 5.5 / Gemini 等。</p>
+<div class="tip">💡 <b>提示：</b>按 <span class="shortcut">Ctrl+Enter</span> 发送消息，<span class="shortcut">Ctrl+N</span> 新建会话，<span class="shortcut">Ctrl+V</span> 粘贴图片上传。</div>
+
+<h3>2.3 Agent 模式</h3>
+<p>输入任务描述，Agent 自动拆解并调用工具执行。支持三种执行方式：</p>
+<table>
+  <tr><th>按钮</th><th>说明</th></tr>
+  <tr><td>执行</td><td>流式执行，实时展示思考和工具调用过程</td></tr>
+  <tr><td>后台</td><td>异步后台执行，完成后 Windows Toast 通知</td></tr>
+  <tr><td>团队</td><td>多 Agent 协作：自动分解为并行子任务，4 角色专家协同</td></tr>
+</table>
+
+<h3>2.4 命令面板</h3>
+<p>按 <span class="shortcut">Ctrl+K</span> 弹出命令面板——搜索工具、切换模式、执行快捷操作。</p>
+
+<h2>3. 工具系统</h2>
+
+<h3>3.1 工具分类（47 个）</h3>
+<table>
+  <tr><th>类别</th><th>工具</th></tr>
+  <tr><td>📁 文件 (7)</td><td>read_file, write_file, list_dir, find_files, copy_file, move_file, delete_file</td></tr>
+  <tr><td>💻 Shell (2)</td><td>shell（30秒超时）, run_python（隔离沙箱）</td></tr>
+  <tr><td>🌐 网页 (3)</td><td>web_fetch, web_search, open_browser</td></tr>
+  <tr><td>📋 剪贴板 (2)</td><td>clipboard_read, clipboard_write</td></tr>
+  <tr><td>🖥️ 桌面 (13)</td><td>click, move_mouse, mouse_pos, type_text, press_key, get_windows, focus_window, window_control, screenshot, ocr, screenshot_find, click_text, launch_app</td></tr>
+  <tr><td>⚙️ 系统 (5)</td><td>system_info, list_processes, kill_process, get_volume, set_volume</td></tr>
+  <tr><td>📄 文档 (2)</td><td>create_pptx, create_dxf</td></tr>
+  <tr><td>🎬 视频 (13)</td><td>video_info, video_trim, video_concat, video_resize, video_extract_audio, video_replace_audio, video_speed, video_to_gif, video_add_text, video_compress, video_convert, video_extract_frames, video_crop</td></tr>
+</table>
+
+<h3>3.2 工具面板</h3>
+<p>在 Agent 标签页，左侧显示完整工具列表：</p>
+<ul>
+  <li>按类别筛选（全部/文件/Shell/网页/桌面/视频/文档/系统/其他）</li>
+  <li>搜索工具名称或描述</li>
+  <li>点击工具查看参数 schema</li>
+  <li>填写参数后点 <b>手动执行</b> 直接调用</li>
+  <li>点击 <b>📋</b> 按钮隐藏/显示面板</li>
+</ul>
+
+<h3>3.3 沙箱安全</h3>
+<ul>
+  <li>Shell 命令拦截危险操作（rm -rf /, format, dd 等）</li>
+  <li>文件操作限制在安全目录（用户主目录、桌面、文档、下载、临时文件夹）</li>
+</ul>
+
+<h2>4. 快捷键</h2>
+
+<table>
+  <tr><th>快捷键</th><th>功能</th></tr>
+  <tr><td><span class="shortcut">Ctrl+1/2/3/4</span></td><td>切换模式（对话/生图/生视频/Agent）</td></tr>
+  <tr><td><span class="shortcut">Ctrl+Enter</span></td><td>发送消息</td></tr>
+  <tr><td><span class="shortcut">Ctrl+N</span></td><td>新建对话</td></tr>
+  <tr><td><span class="shortcut">Ctrl+K</span></td><td>命令面板（搜索工具+快捷操作）</td></tr>
+  <tr><td><span class="shortcut">Ctrl+V</span></td><td>粘贴图片上传</td></tr>
+  <tr><td><span class="shortcut">Ctrl+Shift+A</span></td><td>全局热键呼出 AI Suite 窗口</td></tr>
+  <tr><td><span class="shortcut">Ctrl+R</span></td><td>刷新页面（切换主题用 🎨 按钮）</td></tr>
+</table>
+
+<h2>5. 高级功能</h2>
+
+<h3>5.1 对话记忆</h3>
+<p>所有对话自动保存到 <code>~/.ai-suite/memory.db</code>，左侧边栏显示历史会话。</p>
+<ul>
+  <li>点击会话切换历史对话</li>
+  <li>悬停显示删除按钮</li>
+  <li>首条消息自动作为会话标题</li>
+</ul>
+
+<h3>5.2 RAG 记忆系统</h3>
+<p>Agent 自动记住用户偏好和上下文，越用越聪明。</p>
+<ul>
+  <li>向量嵌入 + 语义检索</li>
+  <li>Agent 自动注入相关记忆到系统提示</li>
+  <li>API: <code>GET/POST /api/rag/memory</code></li>
+</ul>
+
+<h3>5.3 本地文档索引 (Local RAG)</h3>
+<p>索引目录下所有文档，语义搜索。</p>
+<pre># 索引文档目录
+POST /api/rag/index {"path": "~/Documents"}
+
+# 搜索
+GET /api/rag/search?q=机器学习教程</pre>
+
+<h3>5.4 MCP Server</h3>
+<p>将全部 47 工具暴露为标准 MCP 协议，供 Claude Code / Codex 等外部 AI 客户端调用。</p>
+<pre># 启动 MCP SSE Server
+python mcp_server.py --sse --port 5100
+
+# Claude Code 配置 (~/.claude.json):
+{
+  "mcpServers": {
+    "ai-suite": {
+      "url": "http://127.0.0.1:5100/sse"
+    }
+  }
+}</pre>
+
+<h3>5.5 插件系统</h3>
+<p>插件目录: <code>~/.ai-suite/plugins/</code></p>
+<pre># 创建示例插件
+python plugin_manager.py create my_plugin
+
+# 编辑 ~/.ai-suite/plugins/my_plugin.py
+# 文件变化自动热重载</pre>
+
+
+<h3>5.6 邮件集成</h3>
+<p>安装 <code>pywin32</code> 后，Agent 可直接操作 Outlook：</p>
+<ul>
+  <li><code>send_email</code> — 发送邮件</li>
+  <li><code>read_emails</code> — 读取收件箱</li>
+  <li><code>list_calendar</code> — 查看日历</li>
+  <li><code>create_event</code> — 创建日程</li>
+  <li><code>search_contacts</code> — 搜索联系人</li>
+</ul>
+
+<h3>5.7 视觉定位</h3>
+<p>Agent 可以"看"屏幕并精准点击：</p>
+<ul>
+  <li><code>screenshot_find("提交")</code> — 截图找到"提交"按钮坐标</li>
+  <li><code>click_text("提交")</code> — 自动找到并点击</li>
+</ul>
+
+<h3>5.8 多 Agent 协作</h3>
+<p>复杂任务自动分解为并行子任务，4 个角色专家并发执行：</p>
+<table>
+  <tr><th>角色</th><th>擅长</th><th>模型</th></tr>
+  <tr><td>🔍 研究员</td><td>搜索、收集、分析信息</td><td>DeepSeek V4</td></tr>
+  <tr><td>💻 工程师</td><td>写脚本、处理数据</td><td>DeepSeek V4</td></tr>
+  <tr><td>🖥️ 操作员</td><td>桌面操控、文件管理</td><td>Ollama 本地</td></tr>
+  <tr><td>🧠 综合员</td><td>协调、汇总、最终答案</td><td>DeepSeek V4</td></tr>
+</table>
+
+<h2>6. 定时调度</h2>
+<p>点击 ⏰ 按钮或 Agent 标签中配置定时任务：</p>
+<ul>
+  <li>Cron 表达式: <code>0 9 * * *</code>（每天9点）</li>
+  <li>自然语言: "每天早上8点帮我查天气"</li>
+</ul>
+
+<h2>7. 监控仪表盘</h2>
+<p>点击 📊 按钮查看：</p>
+<ul>
+  <li>CPU / RAM / GPU / Disk 实时进度条</li>
+  <li>Token 用量统计</li>
+  <li>Agent 后台任务状态</li>
+  <li>工具健康检查（依赖可用性）</li>
+  <li>RAG 记忆统计 · 文档索引统计 · 插件状态 · MCP 服务器</li>
+</ul>
+
+<h2>8. 常见问题</h2>
+
+<div class="warn"><b>⚠ 打开时有多个弹窗？</b><br>确保使用最新版 EXE（v4.1+），已修复控制台窗口和双托盘图标问题。</div>
+
+<div class="warn"><b>⚠ Agent 不工作？</b><br>检查编排器(5001)是否在运行：<code>python model_orchestrator.py</code><br>检查 API key 是否配置：<code>~/.model_keys.json</code></div>
+
+<div class="warn"><b>⚠ 视频工具报错？</b><br>确保 ffmpeg 已安装：<code>C:\ffmpeg\bin\ffmpeg.exe</code></div>
+
+<div class="tip"><b>💡 如何让 Agent 更聪明？</b><br>多用 RAG 记忆功能——Agent 会自动记住你的偏好。遇到问题时给出明确的任务描述和期望结果。</div>
+
+<div class="tip"><b>💡 如何扩展工具？</b><br>写一个 Python 插件放在 <code>~/.ai-suite/plugins/</code>，或连接外部 MCP Server。</div>
+
+<h2>9. 命令行工具</h2>
+<table>
+  <tr><th>命令</th><th>说明</th></tr>
+  <tr><td><code>python test_tools.py</code></td><td>运行冒烟测试（36项）</td></tr>
+  <tr><td><code>python mcp_server.py --sse</code></td><td>启动 MCP SSE 服务器</td></tr>
+  <tr><td><code>python key_vault.py encrypt</code></td><td>加密 API Keys</td></tr>
+  <tr><td><code>python plugin_manager.py list</code></td><td>列出可用插件</td></tr>
+  <tr><td><code>python multi_agent.py "分析C盘空间"</code></td><td>命令行多 Agent</td></tr>
+</table>
+
+<div class="footer">
+  <p>AI Suite v4.1 · github.com/gain91/g0dness</p>
+  <p>Windows 11 · RTX 5070 Ti · 52 工具 · MIT License</p>
+</div>
+
+</body>
+</html>
