@@ -1,0 +1,1 @@
+- [AI Suite Desktop v4.1](ai-suite-desktop.md) — Tauri 桌面 AI 套件：52 工具 + 多 Agent 协作 + MCP + 角色预设 + 对话/生图/生视频
