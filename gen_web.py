@@ -676,6 +676,11 @@ async def api_open_claude():
     subprocess.Popen(["cmd","/c","start","claude"], cwd=os.path.expanduser("~"))
     return {"ok": True}
 
+@app.get("/api/open_codex")
+async def api_open_codex():
+    subprocess.Popen(["cmd","/c","start","codex"], cwd=os.path.expanduser("~"))
+    return {"ok": True}
+
 UPLOAD_DIR = os.path.join(OUTPUT_DIR, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 

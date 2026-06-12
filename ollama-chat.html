@@ -173,6 +173,16 @@ body {
   color:var(--text); padding:6px 12px; border-radius:var(--radius-sm); font-size:12px;
   white-space:nowrap; border:1px solid var(--border); box-shadow:var(--shadow-md); }
 .claude-btn:hover .tooltip { display:block; }
+.codex-btn { position:fixed; bottom:130px; right:76px; z-index:9999;
+  background:linear-gradient(135deg,#10b981,#059669); color:#fff;
+  border:none; border-radius:50%; width:44px;height:44px;
+  font-size:18px; cursor:pointer; box-shadow:0 4px 16px rgba(16,185,129,.35);
+  display:flex; align-items:center; justify-content:center; user-select:none; transition:var(--transition); }
+.codex-btn:hover { transform:scale(1.05); box-shadow:0 6px 24px rgba(16,185,129,.5); }
+.codex-btn .tooltip { display:none; position:absolute; right:52px; background:var(--surface);
+  color:var(--text); padding:6px 12px; border-radius:var(--radius-sm); font-size:12px;
+  white-space:nowrap; border:1px solid var(--border); box-shadow:var(--shadow-md); }
+.codex-btn:hover .tooltip { display:block; }
 
 /* ── Sidebar ── */
 .sidebar { width:270px; background:var(--sidebar-bg); border-right:1px solid var(--border);
@@ -279,6 +289,10 @@ body {
 <button id="claudeBtn" class="claude-btn" title="启动 Claude Code" draggable="false">
   <span class="tooltip">启动 Claude Code</span>
   🧠
+</button>
+<button id="codexBtn" class="codex-btn" title="启动 Codex (需先 codex login)" draggable="false">
+  <span class="tooltip">启动 Codex</span>
+  ⚡
 </button>
 
 <div class="header">
@@ -1138,37 +1152,40 @@ async function openFolder() {
   await fetch(GEN_API + '/api/open_folder');
 }
 
-// ═══════ 拖拽按钮 ═══════
+// ═══════ 拖拽按钮 (Claude + Codex) ═══════
 (function(){
-  var btn = document.getElementById('claudeBtn');
-  var dragging = false, offX = 0, offY = 0, startX = 0, startY = 0;
-  btn.addEventListener('mousedown', function(e){
-    if (e.button !== 0) return;
-    dragging = true;
-    var rect = btn.getBoundingClientRect();
-    offX = e.clientX - rect.left;
-    offY = e.clientY - rect.top;
-    startX = e.clientX;
-    startY = e.clientY;
-    btn.style.transition = "none";
-    e.preventDefault();
-  });
-  document.addEventListener('mousemove', function(e){
-    if (!dragging) return;
-    btn.style.left = (e.clientX - offX) + 'px';
-    btn.style.top = (e.clientY - offY) + 'px';
-    btn.style.right = 'auto';
-    btn.style.bottom = 'auto';
-  });
-  document.addEventListener('mouseup', function(e){
-    if (!dragging) return;
-    dragging = false;
-    btn.style.transition = '';
-    var dx = e.clientX - startX, dy = e.clientY - startY;
-    if (Math.abs(dx) < 5 && Math.abs(dy) < 5) {
-      fetch(GEN_API+'/api/open_claude');
-    }
-  });
+  function makeDraggable(btn, apiUrl) {
+    var dragging = false, offX = 0, offY = 0, startX = 0, startY = 0;
+    btn.addEventListener('mousedown', function(e){
+      if (e.button !== 0) return;
+      dragging = true;
+      var rect = btn.getBoundingClientRect();
+      offX = e.clientX - rect.left;
+      offY = e.clientY - rect.top;
+      startX = e.clientX;
+      startY = e.clientY;
+      btn.style.transition = "none";
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', function(e){
+      if (!dragging) return;
+      btn.style.left = (e.clientX - offX) + 'px';
+      btn.style.top = (e.clientY - offY) + 'px';
+      btn.style.right = 'auto';
+      btn.style.bottom = 'auto';
+    });
+    document.addEventListener('mouseup', function(e){
+      if (!dragging) return;
+      dragging = false;
+      btn.style.transition = '';
+      var dx = e.clientX - startX, dy = e.clientY - startY;
+      if (Math.abs(dx) < 5 && Math.abs(dy) < 5) {
+        fetch(GEN_API + apiUrl);
+      }
+    });
+  }
+  makeDraggable(document.getElementById('claudeBtn'), '/api/open_claude');
+  makeDraggable(document.getElementById('codexBtn'), '/api/open_codex');
 })();
 
 // ═══════ Conversation Memory ═══════
