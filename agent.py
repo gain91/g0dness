@@ -115,6 +115,7 @@ AGENT_SYSTEM_FALLBACK = AGENT_SYSTEM + "\n\n" + _tools_markdown()
 # ═══════ DeepSeek V4 Config ═══════
 
 import os as _os
+import subprocess
 
 def _load_deepseek_config():
     """Load DeepSeek config from model_keys.json"""
@@ -768,6 +769,69 @@ def register_routes(app):
                 rag_mem.remember(content, category)
                 return {"ok": True}
             return {"ok": False, "error": "Need content"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    # ═══════ v4.0: Real-time Monitoring ═══════
+
+    @app.get("/api/monitoring")
+    async def api_monitoring():
+        """实时系统监控数据"""
+        info = {}
+        try:
+            # CPU
+            try:
+                import psutil
+                info["cpu_percent"] = psutil.cpu_percent(interval=0.5)
+                vmem = psutil.virtual_memory()
+                info["ram_total_gb"] = round(vmem.total / (1024**3), 1)
+                info["ram_used_gb"] = round(vmem.used / (1024**3), 1)
+                info["ram_percent"] = vmem.percent
+            except:
+                info["cpu_percent"] = 0
+                info["ram_percent"] = 0
+
+            # Process count
+            try:
+                info["process_count"] = len(psutil.pids())
+            except:
+                info["process_count"] = 0
+
+            # GPU via nvidia-smi if available
+            try:
+                import shutil as _sh
+                nvsmi = _sh.which("nvidia-smi")
+                if nvsmi:
+                    r = subprocess.run([nvsmi, "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
+                                       "--format=csv,noheader,nounits"],
+                                      capture_output=True, text=True, timeout=5,
+                                      creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                    parts = r.stdout.strip().split(",")
+                    if len(parts) >= 4:
+                        info["gpu_percent"] = int(float(parts[0].strip()))
+                        info["gpu_vram_used_mb"] = int(float(parts[1].strip()))
+                        info["gpu_vram_total_mb"] = int(float(parts[2].strip()))
+                        info["gpu_temp"] = int(float(parts[3].strip()))
+            except:
+                pass
+
+            # Disk
+            try:
+                import shutil as sd
+                disk = sd.disk_usage(_os.path.expanduser("~"))
+                info["disk_total_gb"] = round(disk.total / (1024**3), 1)
+                info["disk_used_gb"] = round(disk.used / (1024**3), 1)
+            except:
+                pass
+
+            # Agent background tasks
+            try:
+                from notify import background_tasks
+                info["background_tasks"] = len(background_tasks) if background_tasks else 0
+            except:
+                info["background_tasks"] = 0
+
+            return {"ok": True, "info": info}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 

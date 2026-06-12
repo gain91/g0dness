@@ -1640,6 +1640,39 @@ async function showDashboard() {
     html += '</p>';
   } catch(e) { html += '<hr><p>🔧 工具健康: ❌ 编排器未连接</p>'; }
 
+  // v4.0: Real-time Monitoring
+  try {
+    let r = await fetch(ORCH_API + '/api/monitoring');
+    let m = await r.json();
+    if (m.ok) {
+      let i = m.info;
+      html += '<hr><h3 style="font-size:14px;margin-bottom:8px">📊 实时监控</h3>';
+      // CPU
+      html += `<div style="margin:6px 0"><span>CPU</span> <span style="float:right">${i.cpu_percent||0}%</span>
+        <div style="background:var(--border);height:6px;border-radius:3px;margin-top:2px">
+        <div style="background:${(i.cpu_percent||0)>80?'#ef4444':(i.cpu_percent||0)>50?'#f59e0b':'#10b981'};height:6px;border-radius:3px;width:${i.cpu_percent||0}%;transition:width .5s"></div></div></div>`;
+      // RAM
+      html += `<div style="margin:6px 0"><span>RAM</span> <span style="float:right">${i.ram_used_gb||0}/${i.ram_total_gb||0} GB (${i.ram_percent||0}%)</span>
+        <div style="background:var(--border);height:6px;border-radius:3px;margin-top:2px">
+        <div style="background:${(i.ram_percent||0)>80?'#ef4444':(i.ram_percent||0)>50?'#f59e0b':'#10b981'};height:6px;border-radius:3px;width:${i.ram_percent||0}%;transition:width .5s"></div></div></div>`;
+      // GPU if available
+      if (i.gpu_percent !== undefined) {
+        html += `<div style="margin:6px 0"><span>GPU</span> <span style="float:right">${i.gpu_percent}% · ${i.gpu_vram_used_mb||0}MB / ${i.gpu_vram_total_mb||0}MB · ${i.gpu_temp||0}°C</span>
+          <div style="background:var(--border);height:6px;border-radius:3px;margin-top:2px">
+          <div style="background:${i.gpu_percent>80?'#ef4444':i.gpu_percent>50?'#f59e0b':'#10b981'};height:6px;border-radius:3px;width:${i.gpu_percent}%;transition:width .5s"></div></div></div>`;
+      }
+      // Disk
+      if (i.disk_total_gb) {
+        let dp = Math.round((i.disk_used_gb||0)/(i.disk_total_gb||1)*100);
+        html += `<div style="margin:6px 0"><span>Disk</span> <span style="float:right">${i.disk_used_gb||0}/${i.disk_total_gb||0} GB (${dp}%)</span>
+          <div style="background:var(--border);height:6px;border-radius:3px;margin-top:2px">
+          <div style="background:${dp>90?'#ef4444':dp>70?'#f59e0b':'#10b981'};height:6px;border-radius:3px;width:${dp}%;transition:width .5s"></div></div></div>`;
+      }
+      // Background tasks
+      html += `<p style="margin-top:4px;font-size:11px;color:var(--muted)">🔄 进程: ${i.process_count||0} · 🤖 后台任务: ${i.background_tasks||0}</p>`;
+    }
+  } catch(e) {}
+
   // v4.0: RAG Memory
   try {
     let r = await fetch(ORCH_API + '/api/rag/memory?action=stats');

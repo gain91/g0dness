@@ -364,6 +364,100 @@ def tool_ocr(image_path=None):
 register("ocr", "Extract text from an image using OCR (Windows built-in)", tool_ocr,
          {"image_path": {"type": "string", "optional": True, "description": "Image file path, omit to screenshot first"}})
 
+# ─── Visual Targeting (v4.0) ───
+
+def tool_screenshot_find(text_query: str):
+    """截图 + OCR 查找文字位置，返回坐标可用于点击"""
+    import time as _time
+    target = os.path.expanduser(f"~/Desktop/visual_{int(_time.time())}.png")
+    r = tool_screenshot(target)
+    if not r.get("ok"):
+        return {"ok": False, "error": "截图失败: " + r.get("error", "")}
+
+    # Run OCR with word-level bounding boxes via PowerShell
+    ps = f'''
+    Add-Type -AssemblyName System.Drawing | Out-Null
+    $bmp = [System.Drawing.Bitmap]::FromFile("{target.replace(chr(92), chr(92)+chr(92))}")
+    $w = $bmp.Width; $h = $bmp.Height
+    $data = $bmp.LockBits([System.Drawing.Rectangle]::new(0,0,$w,$h), [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    $bytes = [byte[]]::new($data.Stride * $h)
+    [System.Runtime.InteropServices.Marshal]::Copy($data.Scan0, $bytes, 0, $bytes.Length)
+    $bmp.UnlockBits($data); $bmp.Dispose()
+
+    [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Graphics.Imaging, ContentType = WindowsRuntime] | Out-Null
+    [Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType = WindowsRuntime] | Out-Null
+
+    $sb = [Windows.Graphics.Imaging.SoftwareBitmap]::CreateCopyFromBuffer(
+        [Windows.Security.Cryptography.CryptographicBuffer]::CreateFromByteArray($bytes),
+        [Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8, $w, $h)
+    $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+    if (-not $engine) {{ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage("zh-Hans") }}
+    if (-not $engine) {{ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage("en") }}
+    if ($engine) {{
+        $result = $engine.RecognizeAsync($sb).GetAwaiter().GetResult()
+        $query = "{text_query}".ToLower()
+        $matches = @()
+        foreach ($line in $result.Lines) {{
+            foreach ($word in $line.Words) {{
+                if ($word.Text.ToLower().Contains($query)) {{
+                    $matches += [PSCustomObject]@{{
+                        Text = $word.Text
+                        X = [int]($word.BoundingRect.X + $word.BoundingRect.Width / 2)
+                        Y = [int]($word.BoundingRect.Y + $word.BoundingRect.Height / 2)
+                        W = [int]$word.BoundingRect.Width
+                        H = [int]$word.BoundingRect.Height
+                    }}
+                }}
+            }}
+        }}
+        ConvertTo-Json -InputObject $matches -Compress
+    }}
+    '''
+    try:
+        r2 = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                           capture_output=True, text=True, timeout=30,
+                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        matches = []
+        if r2.stdout.strip():
+            import json as _j
+            try:
+                data = _j.loads(r2.stdout)
+                if isinstance(data, dict):
+                    data = [data]
+                elif data is None:
+                    data = []
+                for m in data:
+                    matches.append({"text": m.get("Text", ""),
+                                    "x": m.get("X", 0), "y": m.get("Y", 0),
+                                    "w": m.get("W", 0), "h": m.get("H", 0)})
+            except:
+                pass
+        return {"ok": True, "query": text_query, "matches": matches[:20],
+                "screenshot": target, "instruction": "Use click(x, y) to click the target"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def tool_click_text(text_query: str):
+    """截图查找文字并自动点击（组合 screenshot_find + click）"""
+    r = tool_screenshot_find(text_query)
+    if not r.get("ok"):
+        return r
+    matches = r.get("matches", [])
+    if not matches:
+        return {"ok": False, "error": f"未找到文字: {text_query}"}
+    # Click the first match
+    m = matches[0]
+    click_r = tool_click(m["x"], m["y"])
+    return {"ok": True, "text": m["text"], "x": m["x"], "y": m["y"],
+            "click_result": click_r, "total_matches": len(matches)}
+
+
+register("screenshot_find", "Take screenshot and find text location for clicking", tool_screenshot_find,
+         {"text_query": {"type": "string", "description": "Text to find on screen"}})
+register("click_text", "Find text on screen and click it automatically", tool_click_text,
+         {"text_query": {"type": "string", "description": "Text to find and click"}})
+
 # ─── Desktop Control Tools (v3.1) ───
 
 def tool_click(x: int, y: int, button: str = "left"):
