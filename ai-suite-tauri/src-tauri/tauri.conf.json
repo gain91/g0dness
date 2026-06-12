@@ -17,7 +17,7 @@
       "minWidth": 800,
       "minHeight": 600,
       "resizable": true
-    }],
+    }]
   },
   "bundle": {
     "active": true,
