@@ -1499,6 +1499,19 @@ async function showDashboard() {
     html += `<p>📁 文件监工: <b>${d.watchers?.length||0}</b> 个</p>`;
   } catch(e) {}
 
+  // Tools health
+  try {
+    let r = await fetch(ORCH_API + '/api/tools/health');
+    let h = await r.json();
+    html += '<hr><p>🔧 工具健康: <b>' + h.available + '</b>/' + h.total + ' 可用 ';
+    html += h.unavailable.length ? '(⚠️ ' + h.unavailable.length + ' 个不可用)</p>' : '✅</p>';
+    html += '<p style="font-size:11px;color:var(--muted)">依赖: ';
+    for (let [k,v] of Object.entries(h.details)) {
+      html += `<span style="margin-right:8px">${k}: ${v ? '✅' : '❌'}</span>`;
+    }
+    html += '</p>';
+  } catch(e) { html += '<hr><p>🔧 工具健康: ❌ 编排器未连接</p>'; }
+
   // Models
   try {
     let r = await fetch(ORCH_API + '/api/models');

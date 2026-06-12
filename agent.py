@@ -585,6 +585,42 @@ def register_routes(app):
         return StreamingResponse(generate(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+    @app.get("/api/tools/health")
+    async def api_tools_health():
+        """工具健康检查：检测依赖可用性"""
+        health = {"total": tools.TOOLS.__len__(), "available": 0, "unavailable": [], "details": {}}
+
+        # Check ffmpeg
+        ff = tools._find_ffmpeg()
+        health["details"]["ffmpeg"] = bool(ff)
+        if ff:
+            health["details"]["ffmpeg_path"] = ff
+
+        # Check dependencies
+        for mod, pkg in [("PIL", "Pillow"), ("pptx", "python-pptx"),
+                          ("ezdxf", "ezdxf"), ("psutil", "psutil")]:
+            try:
+                __import__(mod)
+                health["details"][pkg] = True
+            except ImportError:
+                health["details"][pkg] = False
+
+        # Check tesseract
+        import shutil as _sh
+        health["details"]["tesseract"] = bool(_sh.which("tesseract"))
+
+        # Count available tools (ones whose deps are met)
+        for name in tools.TOOLS:
+            if name.startswith("video_") and not ff:
+                health["unavailable"].append(name)
+            elif name == "screenshot" and not health["details"].get("Pillow", False):
+                health["unavailable"].append(name)  # has PowerShell fallback actually
+            else:
+                health["available"] += 1
+
+        health["available"] = health["total"] - len(health["unavailable"])
+        return health
+
 
 # ═══════ CLI ═══════
 
