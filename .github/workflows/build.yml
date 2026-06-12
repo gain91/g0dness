@@ -16,6 +16,28 @@ jobs:
         with:
           toolchain: stable-x86_64-pc-windows-msvc
 
-      - name: Cargo check (debug)
+      - name: Show Rust version
+        run: rustc --version && cargo --version
+
+      - name: Cargo check
         working-directory: ai-suite-tauri/src-tauri
-        run: cargo check 2>&1
+        run: cargo check 2>&1 | tee check.log
+
+      - name: Upload check log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-check-log
+          path: ai-suite-tauri/src-tauri/check.log
+
+      - name: Cargo build release
+        if: success()
+        working-directory: ai-suite-tauri/src-tauri
+        run: cargo build --release
+
+      - name: Upload EXE
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI_Suite_EXE
+          path: ai-suite-tauri/src-tauri/target/release/ai-suite.exe
