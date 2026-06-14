@@ -799,6 +799,27 @@ def stream_agent(task: str, model: str = "deepseek", system: str = ""):
     """快速流式运行 Agent"""
     return Agent(model_key=model).stream(task, system=system)
 
+def _learn_from_result(task: str, result: dict, model: str):
+    """后台学习钩子 — Agent 执行完成后自动调用"""
+    try:
+        from memory_agent import add_feedback, evolve_skill_from_session, curator_prune
+        # Record feedback
+        success = result.get("success", False)
+        add_feedback(task, result.get("result", "")[:500],
+                     "good" if success else "bad")
+        # Auto-evolve skill on success
+        if success and result.get("turns", 0) >= 2:
+            steps = result.get("steps", [])
+            tools_used = []
+            for s in steps:
+                for t in s.get("tools", []):
+                    tools_used.append(t.get("name", ""))
+            evolve_skill_from_session(task, result, tools_used)
+        # Periodic cleanup
+        curator_prune(min_importance=0.2, max_age_days=60)
+    except Exception:
+        pass  # Learning failure should never break the agent
+
 
 # ═══════ FastAPI 路由 ═══════
 
@@ -823,6 +844,9 @@ def register_routes(app):
         system = data.get("system", "")
         agent = Agent(model_key=model)
         result = agent.run(task, system=system)
+        # Background: learn from this execution
+        import threading as _thr
+        _thr.Thread(target=_learn_from_result, args=(task, result, model), daemon=True).start()
         return result
 
     @app.post("/api/agent/plan")

@@ -220,6 +220,117 @@ def build_agent_context(task: str) -> str:
     return "\n".join(parts) if parts else ""
 
 
+# ═══════ Self-Evolution System (Hermes Agent inspired) ═══════
+
+def evolve_skill_from_session(task: str, result: dict, tools_used: list) -> dict:
+    """
+    闭环学习：从成功的 Agent 会话自动创建可复用技能。
+    触发条件: 任务成功 + 使用了≥2个工具 + 模式新颖
+    """
+    if not result.get("success"): return {"created": False}
+    turns = result.get("turns", 0)
+    if turns < 2 or len(tools_used) < 2: return {"created": False}
+
+    # Generate skill name from task
+    task_words = task.replace('，',' ').replace('、',' ').split()
+    skill_name = '_'.join(w for w in task_words[:3] if len(w) >= 2 and not w.startswith('http'))
+
+    # Check if similar skill already exists
+    existing = search_memories(query=skill_name, limit=1)
+    if existing and existing[0].get("importance", 0) > 0.6:
+        return {"created": False, "reason": "similar skill exists"}
+
+    # Create skill as high-importance memory
+    tool_chain = " → ".join(tools_used[:8])
+    skill_content = f"""# {skill_name}
+任务模板: {task[:300]}
+工具链: {tool_chain}
+轮次: {turns}轮
+结果: {result.get('result', '')[:300]}"""
+
+    add_memory(skill_content, category="skill", source="agent_evolved", importance=0.7)
+    return {"created": True, "skill": skill_name, "tools": len(tools_used)}
+
+
+def curator_prune(min_importance: float = 0.3, max_age_days: int = 30):
+    """
+    Curator 模式：定期清理低质量/过时的记忆。
+    保留: 高重要性 (>0.5) 或 近期访问过的
+    归档: 低重要性 + 长期未访问
+    """
+    conn = _get_db()
+    # Archive low-importance, stale memories
+    sql = """UPDATE memories SET category = 'archived'
+             WHERE importance < ? AND access_count < 3
+             AND accessed_at < datetime('now', ?)"""
+    conn.execute(sql, (min_importance, f'-{max_age_days} days'))
+    archived = conn.rowcount
+    conn.commit()
+    conn.close()
+    return {"archived": archived, "reason": f"importance<{min_importance}, stale>{max_age_days}d"}
+
+
+def adaptive_context(user_msg: str, recent_tools: list = None) -> str:
+    """
+    自适应上下文构建 — 学习用户习惯模式。
+    - 常用目录
+    - 偏好工具
+    - 最近话题
+    """
+    ctx_parts = []
+
+    # Recently used tools → preference
+    if recent_tools:
+        tool_counts = {}
+        for t in recent_tools[-20:]:
+            tool_counts[t] = tool_counts.get(t, 0) + 1
+        top = sorted(tool_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+        ctx_parts.append(f"最近常用工具: {', '.join(f'{t}({c}次)' for t,c in top)}")
+
+    # Learn from user's message patterns
+    if len(user_msg) > 200:
+        ctx_parts.append("用户偏好详细描述")
+    elif '?' in user_msg or '？' in user_msg:
+        ctx_parts.append("用户在提问，需要简洁回答")
+
+    return "\n".join(ctx_parts)
+
+
+def session_mining(recent_convs: list = None) -> list:
+    """
+    会话挖掘 — 扫描历史对话，发现可复用工作流模式。
+    返回: 发现的模式列表
+    """
+    patterns = []
+    recent = search_memories(category="skill", limit=20)
+    feedback = get_feedback_stats()
+
+    # Pattern: if user frequently asks for a workflow, elevate it
+    if feedback["total"] > 5:
+        success_rate = feedback["good"] / feedback["total"] if feedback["total"] else 0
+        if success_rate > 0.7:
+            patterns.append({
+                "type": "high_success",
+                "message": f"Agent 成功率高 ({success_rate:.0%})，可尝试更复杂任务",
+                "confidence": success_rate
+            })
+        elif success_rate < 0.3:
+            patterns.append({
+                "type": "low_success",
+                "message": f"Agent 成功率偏低 ({success_rate:.0%})，建议简化任务或切换模型",
+                "confidence": 1 - success_rate
+            })
+
+    if recent:
+        patterns.append({
+            "type": "skills_available",
+            "count": len(recent),
+            "top_skills": [s["content"][:100] for s in recent[:3]]
+        })
+
+    return patterns
+
+
 # ═══════ FastAPI 路由 ═══════
 
 def register_memory_routes(app):
@@ -257,6 +368,49 @@ def register_memory_routes(app):
     @app.get("/api/memory/context")
     async def api_context(task: str = ""):
         return {"context": build_agent_context(task)}
+
+    # Self-evolution endpoints
+    @app.post("/api/memory/evolve")
+    async def api_evolve(request: Request):
+        """从 Agent 会话创建技能"""
+        data = await request.json()
+        result = evolve_skill_from_session(
+            data.get("task", ""),
+            data.get("result", {}),
+            data.get("tools_used", []))
+        return result
+
+    @app.post("/api/memory/curator")
+    async def api_curator():
+        """Curator 清理低质量记忆"""
+        return curator_prune()
+
+    @app.get("/api/memory/mine")
+    async def api_mine():
+        """会话挖掘 — 发现可复用模式"""
+        return {"patterns": session_mining()}
+
+    @app.get("/api/memory/adaptive")
+    async def api_adaptive(q: str = ""):
+        """自适应上下文"""
+        return {"context": adaptive_context(q)}
+
+    @app.get("/api/agent/learn")
+    async def api_agent_learn(task: str = "", success: str = "true", turns: int = 1,
+                               model: str = "", tools: str = ""):
+        """Agent 学习钩子 — 每次 Agent 任务完成后调用"""
+        try:
+            tools_list = tools.split(",") if tools else []
+            add_feedback(task, "", "good" if success == "true" else "bad")
+            # Auto-evolve on success
+            if success == "true" and turns >= 2:
+                evolve_skill_from_session(task,
+                    {"success": True, "turns": turns, "result": ""}, tools_list)
+            curator_prune(min_importance=0.2, max_age_days=60)
+            stats = get_feedback_stats()
+            return {"ok": True, "stats": stats, "skills": len(search_memories(category="skill", limit=100))}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
 
 # ═══════ Init ═══════
