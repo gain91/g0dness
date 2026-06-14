@@ -362,10 +362,10 @@ body {
   </select>
   <button class="theme-btn" onclick="savePersona()" title="保存当前系统提示为角色" style="font-size:11px">💾</button>
   <div class="mode-tabs">
-    <button class="mode-tab active" onclick="switchMode('chat')">💬 对话</button>
-    <button class="mode-tab" onclick="switchMode('image')">🎨 生图</button>
-    <button class="mode-tab" onclick="switchMode('video')">🎬 生视频</button>
-    <button class="mode-tab" onclick="switchMode('agent')">🤖 Agent</button>
+    <button class="mode-tab active" data-mode="chat" onclick="switchMode('chat')">💬 对话</button>
+    <button class="mode-tab" data-mode="image" onclick="switchMode('image')">🎨 生图</button>
+    <button class="mode-tab" data-mode="video" onclick="switchMode('video')">🎬 生视频</button>
+    <button class="mode-tab" data-mode="agent" onclick="switchMode('agent')">🤖 Agent</button>
   </div>
   <button class="theme-btn" id="autostartBtn" onclick="toggleAutostartBtn()" title="开机自启" style="font-size:12px">🚀</button>
   <button class="theme-btn" onclick="showModelManager()" title="Ollama 模型管理">📦</button>
@@ -481,6 +481,7 @@ body {
 <div class="input-area" id="chatInputArea">
   <textarea id="input" placeholder="输入内容，按 Enter 发送，Shift+Enter 换行..." rows="1" onkeydown="handleKey(event)"></textarea>
   <input type="file" id="chatFile" accept="image/*,video/*,.pdf,.doc,.docx,.txt" style="display:none" onchange="uploadFile('chat')">
+  <button onclick="showQuickTools()" title="快捷工具" style="background:var(--input-bg);color:var(--muted);border:1px solid var(--border);padding:8px 10px;border-radius:6px;cursor:pointer;font-size:14px;height:44px;width:44px;flex-shrink:0">🔧</button>
   <button onclick="document.getElementById('chatFile').click()" style="background:var(--input-bg);color:var(--muted);border:1px solid var(--border);padding:8px 10px;border-radius:6px;cursor:pointer;font-size:14px;height:44px;width:44px;flex-shrink:0" title="添加文件">📎</button>
   <button id="sendBtn" onclick="send()">发送</button>
   <button id="micBtn" onclick="toggleVoice()" title="语音输入" style="background:var(--accent);color:#fff;border:none;padding:8px 10px;border-radius:6px;cursor:pointer;font-size:14px;height:44px;width:44px;flex-shrink:0">🎤</button>
@@ -719,28 +720,30 @@ function handleSlashCommand(text) {
 // ═══════ 模式切换 ═══════
 function switchMode(mode) {
   currentMode = mode;
-  document.querySelectorAll('.mode-tab').forEach((t,i) => {
-    t.classList.toggle('active', (i===0 && mode==='chat') || (i===1 && mode==='image') || (i===2 && mode==='video') || (i===3 && mode==='agent'));
+  // Tabs: use data-mode attribute instead of brittle index
+  document.querySelectorAll('.mode-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.mode === mode);
   });
-  document.getElementById('chatView').classList.toggle('hidden', mode !== 'chat');
-  document.getElementById('imageView').classList.toggle('hidden', mode !== 'image');
-  document.getElementById('videoView').classList.toggle('hidden', mode !== 'video');
-  document.getElementById('agentView').classList.toggle('hidden', mode !== 'agent');
-  const isChat = mode === 'chat';
-  const isAgent = mode === 'agent';
-  document.getElementById('chatInputArea').classList.toggle('hidden', !isChat);
-  if (isChat || isAgent) {
-    document.getElementById('orchestratorModel').style.display = isAgent ? 'none' : '';
-    document.getElementById('modelSelect').style.display = isChat && chatModel==='ollama' ? '' : 'none';
-    document.getElementById('orSubModel').style.display = isChat && chatModel==='openrouter' ? '' : 'none';
-    document.getElementById('status').style.display = isChat ? '' : 'none';
-  } else {
-    ['orchestratorModel','modelSelect','orSubModel','status'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) { el.style.display = 'none'; }
-    });
+  // View visibility
+  const views = {chat:'chatView', image:'imageView', video:'videoView', agent:'agentView'};
+  for (const [m, id] of Object.entries(views)) {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('hidden', m !== mode);
   }
+  // Chat input area: ONLY for chat mode
+  const chatInput = document.getElementById('chatInputArea');
+  chatInput.classList.toggle('hidden', mode !== 'chat');
+  // Model selector: only for chat
+  const modelRow = document.getElementById('orchestratorModel');
+  if (modelRow) modelRow.style.display = (mode === 'chat') ? '' : 'none';
+  document.getElementById('modelSelect').style.display = (mode === 'chat' && chatModel === 'ollama') ? '' : 'none';
+  document.getElementById('orSubModel').style.display = (mode === 'chat' && chatModel === 'openrouter') ? '' : 'none';
+  document.getElementById('status').style.display = (mode === 'chat') ? '' : 'none';
+  // Agent: load tools panel
   if (mode === 'agent') { loadTools(); }
+  // Scroll active view to bottom
+  const activeView = document.getElementById(views[mode]);
+  if (activeView) { setTimeout(() => { activeView.scrollTop = activeView.scrollHeight; }, 100); }
 }
 
 // ═══════ 工具面板 ═══════
@@ -879,6 +882,58 @@ function toggleToolsPanel() {
   document.getElementById('toolsPanel').classList.toggle('collapsed');
 }
 
+async function showQuickTools() {
+  const tools = [
+    {name:'system_info', desc:'系统状态', icon:'🖥️'},
+    {name:'web_search', desc:'网页搜索', icon:'🔍'},
+    {name:'list_dir', desc:'浏览目录', icon:'📁'},
+    {name:'screenshot', desc:'截图', icon:'📸'},
+    {name:'clipboard_read', desc:'读剪贴板', icon:'📋'},
+    {name:'get_windows', desc:'窗口列表', icon:'🪟'},
+  ];
+  let html = '<div class="modal-box" style="max-width:360px"><button class="modal-close" onclick="this.closest(\'.modal-overlay\').remove()">&times;</button>';
+  html += '<h2>🔧 快捷工具</h2>';
+  html += '<div id="qtResult" style="margin-bottom:10px;font-size:12px;color:var(--muted);min-height:20px"></div>';
+  for (const t of tools) {
+    html += `<div style="display:flex;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="quickToolExec('${t.name}')">
+      <span style="font-size:18px;width:32px">${t.icon}</span>
+      <span style="font-weight:600;font-size:13px;flex:1">${t.name}</span>
+      <span style="font-size:11px;color:var(--muted)">${t.desc}</span>
+    </div>`;
+  }
+  html += '</div>';
+  const ov = document.createElement('div');
+  ov.className = 'modal-overlay';
+  ov.onclick = function(e) { if (e.target===ov) ov.remove(); };
+  ov.innerHTML = html;
+  document.body.appendChild(ov);
+  window._qtResolve = (resultHtml) => {
+    document.getElementById('qtResult').innerHTML = resultHtml;
+  };
+}
+
+async function quickToolExec(name) {
+  const resultEl = document.getElementById('qtResult');
+  if (resultEl) resultEl.innerHTML = '⏳ 执行中...';
+  try {
+    const r = await fetch(ORCH_API + '/api/tools/' + name, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({})
+    });
+    const d = await r.json();
+    if (resultEl) {
+      if (d.ok) {
+        const preview = JSON.stringify(d).slice(0, 300);
+        resultEl.innerHTML = '✅ <b>' + name + '</b><br><small>' + escapeHTML(preview) + '</small>';
+      } else {
+        resultEl.innerHTML = '❌ ' + (d.error || 'Failed');
+      }
+    }
+  } catch(e) {
+    if (resultEl) resultEl.innerHTML = '❌ ' + e.message;
+  }
+}
+
 // ═══════ 对话 ═══════
 async function listModels() {
   try {
@@ -918,10 +973,15 @@ function switchChatModel() {
   }
 }
 
+function escapeHTML(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
 function handleKey(e) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     if (currentMode === 'chat') send();
+    else if (currentMode === 'agent') agentSend();
   }
 }
 
@@ -1727,19 +1787,34 @@ async function agentSend() {
         if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
         try {
           const evt = JSON.parse(line.slice(6));
-          if (evt.type === 'thinking') {
-            fullText += evt.text;
-            let html = '<div class="role">🤖 ' + (agentModel||'Agent') + ' · 思考中</div>';
-            if (fullText) html += '<div style="color:var(--muted);font-size:12px;margin:4px 0;border-left:3px solid var(--accent);padding-left:8px">' + renderMD(fullText.slice(-500)) + '</div>';
+          if (evt.type === 'turn') {
+            // New turn started
+          } else if (evt.type === 'token') {
+            // Streaming token from Ollama
+            fullText += evt.token;
+            let html = '<div class="role">🤖 ' + (agentModel||'Agent') + ' · 思考中 · 第' + (evt.turn+1) + '轮</div>';
+            html += '<div style="color:var(--muted);font-size:12px;margin:4px 0;border-left:3px solid var(--accent);padding-left:8px">' + escapeHTML(fullText.slice(-1500)) + '<span class="stream-cursor">▌</span></div>';
             if (toolCalls.length) {
               html += toolCalls.map(tc => '<div style="background:rgba(0,0,0,.05);padding:4px 8px;border-radius:4px;margin:2px 0;font-size:12px">🔧 <b>' + tc.name + '</b>' + (tc.result ? (' → ' + (tc.result.ok ? '✅' : '❌')) : ' ⏳') + '</div>').join('');
             }
             streamDiv.innerHTML = html;
             log.scrollTop = log.scrollHeight;
+          } else if (evt.type === 'thinking') {
+            fullText += evt.text;
+            let html = '<div class="role">🤖 ' + (agentModel||'Agent') + ' · 思考中 · 第' + ((evt.turn||0)+1) + '轮</div>';
+            html += '<div style="color:var(--muted);font-size:12px;margin:4px 0;border-left:3px solid var(--accent);padding-left:8px">' + escapeHTML(fullText.slice(-1500)) + '</div>';
+            if (toolCalls.length) {
+              html += toolCalls.map(tc => '<div style="background:rgba(0,0,0,.05);padding:4px 8px;border-radius:4px;margin:2px 0;font-size:12px">🔧 <b>' + tc.name + '</b>' + (tc.result ? (' → ' + (tc.result.ok ? '✅' : '❌')) : ' ⏳') + '</div>').join('');
+            }
+            streamDiv.innerHTML = html;
+            log.scrollTop = log.scrollHeight;
+          } else if (evt.type === 'goal_check') {
+            fullText += '\n\n_(' + (evt.msg || '目标检测') + ')_';
           } else if (evt.type === 'tool_call') {
-            let argsStr = '';
-            try { argsStr = JSON.stringify(evt.args).slice(0, 80); } catch(e) {}
-            toolCalls.push({name: evt.tool, args: argsStr, result: null});
+            toolCalls.push({name: evt.tool, args: JSON.stringify(evt.args||{}).slice(0, 80), result: null});
+            let html = '<div class="role">🤖 ' + (agentModel||'Agent') + ' · 执行工具</div>';
+            html += toolCalls.map(tc => '<div style="background:rgba(0,0,0,.05);padding:4px 8px;border-radius:4px;margin:2px 0;font-size:12px">🔧 <b>' + tc.name + '</b>' + (tc.result ? (' → ' + (tc.result.ok ? '✅' : '❌')) : ' ⏳') + '</div>').join('');
+            streamDiv.innerHTML = html;
           } else if (evt.type === 'tool_result') {
             let tc = toolCalls.find(t => t.name === evt.tool && !t.result);
             if (tc) tc.result = evt.result;
@@ -1747,7 +1822,7 @@ async function agentSend() {
             turns = evt.turns;
             fullText = evt.text || fullText;
           } else if (evt.type === 'error') {
-            fullText = '❌ ' + evt.error;
+            fullText += '\n\n❌ ' + evt.error;
           }
         } catch(e) {}
       }
@@ -1781,7 +1856,7 @@ async function agentBackground() {
 
   const infoDiv = document.createElement('div');
   infoDiv.className = 'msg assistant';
-  infoDiv.innerHTML = '<div class="role">⏳ 已提交后台</div>任务已提交后台执行，完成后会弹出 Windows 通知。可关闭窗口或继续其他操作。';
+  infoDiv.id = 'bgTask-' + Date.now();
   log.appendChild(infoDiv);
   log.scrollTop = log.scrollHeight;
 
@@ -1791,7 +1866,26 @@ async function agentBackground() {
       body: JSON.stringify({task: task, model: document.getElementById('agentModel').value})
     });
     const d = await r.json();
-    infoDiv.innerHTML = '<div class="role">⏳ 后台运行中</div>任务 ID: <b>' + d.id + '</b><br>状态: ' + d.status + '<br><small>完成后弹出通知</small>';
+    if (!d.ok) throw new Error(d.error);
+    const taskId = d.task_id;
+    infoDiv.innerHTML = '<div class="role">⏳ 后台运行中</div>任务 ID: <b>' + taskId + '</b><br>状态: 运行中...<br><small>完成后弹出通知</small>';
+    // Poll for completion
+    const poll = setInterval(async () => {
+      try {
+        const sr = await fetch(ORCH_API + '/api/agent/task/' + taskId);
+        const sd = await sr.json();
+        if (!sd.ok) return;
+        if (sd.status === 'done' || sd.status === 'failed' || sd.status === 'error') {
+          clearInterval(poll);
+          const emoji = sd.status === 'done' ? '✅' : '❌';
+          infoDiv.innerHTML = '<div class="role">' + emoji + ' 后台任务完成</div>'
+            + '<b>' + taskId + '</b> · 状态: ' + sd.status.toUpperCase()
+            + (sd.result ? '<br><br>' + renderMD(sd.result) : '')
+            + (sd.error ? '<br>错误: ' + sd.error : '');
+          log.scrollTop = log.scrollHeight;
+        }
+      } catch(e) {}
+    }, 3000);
   } catch(e) {
     infoDiv.innerHTML = '<div class="role">❌ 提交失败</div>' + e.message;
   }
