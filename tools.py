@@ -1472,6 +1472,7 @@ register("video_crop", "裁剪视频画面区域 — Crop video", tool_video_cro
 
 # ═══════ Tool Result Cache ═══════
 _TOOL_CACHE = {}  # {cache_key: (timestamp, result)}
+_CACHE_MAX = 200  # max entries before LRU eviction
 
 CACHE_TTL = {
     "system_info": 15,      # 15s — hardware doesn't change fast
@@ -1503,8 +1504,13 @@ def execute(tool_name, params):
     except Exception as e:
         result = {"ok": False, "error": str(e)}
 
-    # Cache successful results
+    # Cache successful results with LRU eviction
     if ttl and result.get("ok"):
+        if len(_TOOL_CACHE) >= _CACHE_MAX:
+            # Evict oldest 20% of entries
+            sorted_entries = sorted(_TOOL_CACHE.items(), key=lambda x: x[1][0])
+            for old_key, _ in sorted_entries[:max(1, _CACHE_MAX // 5)]:
+                del _TOOL_CACHE[old_key]
         _TOOL_CACHE[cache_key] = (_t.time(), result)
     return result
 

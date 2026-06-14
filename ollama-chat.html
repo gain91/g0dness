@@ -414,7 +414,11 @@ body {
         <!-- Agent Main -->
         <div class="agent-main">
           <div class="agent-log-wrap" id="agentLog"></div>
-          <div style="padding:10px 16px;background:var(--header-bg);border-top:1px solid var(--border);display:flex;gap:6px;align-items:flex-end">
+          <div style="padding:10px 16px;background:var(--header-bg);border-top:1px solid var(--border);display:flex;flex-direction:column;gap:4px">
+            <div style="display:flex;gap:4px;flex-wrap:wrap" id="agentTemplates">
+              <span style="font-size:10px;color:var(--muted);padding:2px 4px">模板:</span>
+            </div>
+            <div style="display:flex;gap:6px;align-items:flex-end">
             <button class="tools-toggle" id="toolsToggle" onclick="toggleToolsPanel()" title="切换工具面板">📋</button>
             <select id="agentModel" style="background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:12px;width:150px;height:44px">
               <option value="deepseek">DeepSeek V4 Pro</option>
@@ -427,6 +431,7 @@ body {
             <button style="background:var(--accent);color:#fff;border:none;padding:10px 16px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:bold;white-space:nowrap;height:44px" id="agentBtn" onclick="agentSend()">执行</button>
             <button style="background:#a855f7;color:#fff;border:none;padding:10px 12px;border-radius:8px;cursor:pointer;font-size:12px;white-space:nowrap;height:44px" id="agentBgBtn" onclick="agentBackground()">后台</button>
             <button style="background:#f59e0b;color:#fff;border:none;padding:10px 12px;border-radius:8px;cursor:pointer;font-size:12px;white-space:nowrap;height:44px" id="teamBtn" onclick="teamSend()" title="多 Agent 协作">团队</button>
+          </div>
           </div>
         </div>
       </div>
@@ -493,6 +498,56 @@ const OLLAMA = 'http://localhost:11434';
 const GEN_API = window.location.origin;
 const ORCH_API = window.location.protocol + '//' + window.location.hostname + ':5001';
 let model = 'deepseek-r1:14b';
+
+// ═══════ Onboarding — 首次访问引导 ═══════
+(function checkOnboarding() {
+  if (localStorage.getItem('aisuite_onboarded')) return;
+  const steps = [
+    {icon:'?', title:'四模式切换', desc:'对话 ? 生图 ? 生视频 ? Agent — 顶部标签切换，Ctrl+1/2/3/4 快捷键'},
+    {icon:'?', title:'Agent 自主执行', desc:'输入任务 ? Agent 自动规划、调工具、查结果、修复错误。点击「后台」可异步运行'},
+    {icon:'?', title:'52 个工具', desc:'文件操作、Shell、网页搜索、桌面控制、视频编辑、邮件 — Agent 自动选用'},
+    {icon:'@', title:'仪表盘', desc:'@ 按钮查看实时 CPU/GPU/RAM/Disk 用量、Token 统计、工具健康状态'},
+    {icon:'?', title:'快捷键', desc:'Ctrl+K 命令面板 ? Ctrl+Shift+A 全局呼出 ? Ctrl+N 新对话 ? Ctrl+Enter 发送'},
+    {icon:'?', title:'三主题', desc:'? 按钮切换浅色/深色/OLED 主题，颜色偏好自动保存'},
+  ];
+  const html = '<div class="modal-box" style="max-width:560px"><button class="modal-close" onclick="this.closest(\'.modal-overlay\').remove();localStorage.setItem(\'aisuite_onboarded\',\'1\')">&times;</button>'
+    + '<h2>? 欢迎使用 g0dness AI Suite v4.1</h2>'
+    + '<p style="color:var(--muted);font-size:13px;margin-bottom:16px">52 工具 ? 4 模式 ? 多模型 ? Agent 自主桌面助手</p>'
+    + steps.map((s,i) => '<div style="display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)"><span style="font-size:28px;width:40px;text-align:center">'+s.icon+'</span><div><b style="font-size:14px">'+s.title+'</b><br><span style="font-size:12px;color:var(--muted)">'+s.desc+'</span></div></div>').join('')
+    + '<button onclick="this.closest(\'.modal-overlay\').remove();localStorage.setItem(\'aisuite_onboarded\',\'1\')" style="width:100%;margin-top:16px;background:var(--accent);color:#fff;border:none;padding:12px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600">开始使用</button>'
+    + '</div>';
+  const ov = document.createElement('div');
+  ov.className = 'modal-overlay';
+  ov.innerHTML = html;
+  setTimeout(() => document.body.appendChild(ov), 500);
+})();
+
+// ═══════ Agent 任务模板 ═══════
+const AGENT_TEMPLATES = [
+  {label:'🧹 清理桌面', text:'扫描桌面文件，按类型分类整理到对应文件夹（图片/文档/下载/其他），删除垃圾文件和空文件夹'},
+  {label:'📊 系统体检', text:'执行系统健康检查：CPU/内存/磁盘占用、运行中进程前10、磁盘空间不足的目录'},
+  {label:'📁 整理下载', text:'分析 ~/Downloads 目录，按文件类型分类移动到子文件夹（文档/图片/视频/压缩包/安装包），报告清理结果'},
+  {label:'🔍 重复查找', text:'扫描 ~/Documents 目录，找出重复文件（按大小+内容哈希），列出可安全删除的重复项'},
+  {label:'📸 批量截图', text:'打开浏览器搜索最新AI新闻，截图5个不同页面保存到 ~/Desktop/ai-news/'},
+  {label:'✉️ 邮件汇总', text:'读取最近3天的未读邮件，总结关键信息（发件人/主题/紧急程度），生成汇总报告'},
+  {label:'🎬 视频压缩', text:'扫描 ~/Videos 目录中大于50MB的视频文件，批量压缩到720p，保留原文件备份'},
+  {label:'📝 日志分析', text:'查找系统最近24小时的错误日志，分析高频错误类型，生成排查建议'},
+];
+function initTemplates() {
+  const el = document.getElementById('agentTemplates');
+  if (!el) return;
+  el.innerHTML = '<span style="font-size:10px;color:var(--muted);padding:2px 4px">模板:</span>' +
+    AGENT_TEMPLATES.map((t,i) =>
+      `<span onclick="fillTemplate(${i})" style="cursor:pointer;font-size:10px;padding:2px 6px;background:var(--accent-light);color:var(--accent);border-radius:10px;white-space:nowrap;transition:var(--transition)" onmouseover="this.style.background='var(--accent)';this.style.color='#fff'" onmouseout="this.style.background='var(--accent-light)';this.style.color='var(--accent)'">${t.label}</span>`
+    ).join('');
+}
+function fillTemplate(i) {
+  const t = AGENT_TEMPLATES[i];
+  if (!t) return;
+  document.getElementById('agentTask').value = t.text;
+  document.getElementById('agentTask').focus();
+}
+initTemplates();
 let chatModel = 'ollama';
 let currentMode = 'chat';
 let genPolling = null;

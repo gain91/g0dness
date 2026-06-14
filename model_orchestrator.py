@@ -88,6 +88,92 @@ def _load_deepseek_config():
 
 DEEPSEEK_CONFIG = _load_deepseek_config()
 
+# ═══════ AI Gateway — 统一多提供商抽象 ═══════
+
+class AIGateway:
+    """统一的 AI 提供商接口 — runtime switching, fallback chains, usage tracking"""
+
+    def __init__(self):
+        self.usage = {"calls": 0, "tokens": 0, "providers": {}}
+
+    def chat(self, prompt: str, system: str = "", provider: str = None,
+             submodel: str = "claude") -> dict:
+        """
+        统一对话 — 自动路由或指定提供商。
+        返回: {provider, reply, error, tokens_used}
+        """
+        import time as _t
+        start = _t.time()
+
+        if not provider:
+            provider = smart_route(prompt)
+
+        self.usage["calls"] += 1
+        self.usage["providers"][provider] = self.usage["providers"].get(provider, 0) + 1
+
+        # Try primary provider
+        reply = None
+        error = None
+        try:
+            if provider == "ollama":
+                reply = chat_ollama(prompt, system=system)
+            elif provider == "deepseek":
+                reply = chat_deepseek(prompt, system=system)
+            elif provider in OPENROUTER_MODELS:
+                reply = chat_openrouter(prompt, system=system, submodel=provider)
+            else:
+                reply = chat_ollama(prompt, system=system)
+                provider = "ollama"
+        except Exception as e:
+            error = str(e)
+            # Fallback chain: Ollama → OpenRouter → DeepSeek
+            for fb in ["ollama", "deepseek"]:
+                if fb == provider:
+                    continue
+                try:
+                    if fb == "ollama":
+                        reply = chat_ollama(prompt, system=system)
+                    elif fb == "deepseek":
+                        reply = chat_deepseek(prompt, system=system)
+                    provider = fb
+                    error = f"Fell back to {fb}: {e}"
+                    break
+                except Exception:
+                    pass
+
+        elapsed = round(_t.time() - start, 1)
+        tokens = estimateTokens(reply) if reply else 0
+        self.usage["tokens"] += tokens
+
+        return {"provider": provider, "reply": reply or "", "error": error,
+                "tokens": tokens, "elapsed_s": elapsed}
+
+    def provider_health(self) -> dict:
+        """检查各提供商可用性"""
+        health = {"ollama": False, "deepseek": False, "openrouter": False}
+        try:
+            import urllib.request
+            urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
+            health["ollama"] = True
+        except:
+            pass
+        keys = load_keys()
+        health["deepseek"] = bool(keys.get("deepseek_key"))
+        health["openrouter"] = bool(keys.get("openrouter_key"))
+        health["providers_count"] = sum(1 for v in health.values() if v)
+        return {"ok": True, "health": health, "usage": self.usage}
+
+    def stats(self) -> dict:
+        return {"usage": self.usage, "providers": len(self.usage.get("providers", {}))}
+
+
+def estimateTokens(text: str) -> int:
+    """粗略 token 估算 — 中文 ~1.5 char/token, 英文 ~4 char/token"""
+    return max(1, len(text) // 3)
+
+# Global gateway instance
+gateway = AIGateway()
+
 # ═══════ 简易编排（不用完整 AutoGen 重依赖）══
 try:
     from litellm import completion
@@ -581,6 +667,26 @@ async def api_models():
         "openrouter": {"available": "openrouter_key" in keys, "free": False,
                        "models": list(OPENROUTER_MODELS.keys())},
     }
+
+# ═══════ AI Gateway API ═══════
+
+@app.get("/api/gateway/health")
+async def api_gateway_health():
+    return gateway.provider_health()
+
+@app.get("/api/gateway/stats")
+async def api_gateway_stats():
+    return gateway.stats()
+
+@app.post("/api/gateway/chat")
+async def api_gateway_chat(request: Request):
+    data = await request.json()
+    prompt = data.get("prompt", "").strip()
+    if not prompt:
+        return JSONResponse({"error": "empty prompt"}, 400)
+    return gateway.chat(prompt, system=data.get("system", ""),
+                        provider=data.get("provider"),
+                        submodel=data.get("submodel", "claude"))
 
 # ═══════ Tool API ═══════
 try:

@@ -1003,6 +1003,50 @@ def register_routes(app):
         health["available"] = health["total"] - len(health["unavailable"])
         return health
 
+    @app.get("/api/tools/catalog")
+    async def api_tools_catalog():
+        """工具目录 — 结构化 5 列视图 + 自动验证状态"""
+        catalog = []
+        deps = {}
+        # Check dependencies once
+        ff = tools._find_ffmpeg()
+        deps["ffmpeg"] = bool(ff)
+        for mod, _ in [("PIL", "Pillow"), ("pptx", "python-pptx"), ("ezdxf", "ezdxf"), ("psutil", "psutil")]:
+            try: __import__(mod); deps[_] = True
+            except ImportError: deps[_] = False
+        import shutil as _sh
+        deps["tesseract"] = bool(_sh.which("tesseract"))
+
+        for t in tools.list_tools():
+            name = t["name"]
+            schema = t.get("schema", {})
+            params = ", ".join(schema.keys()) if schema else "—"
+            # Determine category and health
+            cat = "other"
+            if name.startswith("video_"): cat = "video"
+            elif name.startswith("clipboard_"): cat = "clipboard"
+            elif name in ("read_file","write_file","list_dir","find_files","copy_file","move_file","delete_file"): cat = "file"
+            elif name in ("shell","run_python"): cat = "shell"
+            elif name in ("web_fetch","web_search","open_browser"): cat = "web"
+            elif name in ("click","move_mouse","mouse_pos","type_text","press_key","get_windows","focus_window","window_control","screenshot","launch_app","ocr","screenshot_find","click_text"): cat = "desktop"
+            elif name in ("system_info","list_processes","kill_process","get_volume","set_volume"): cat = "system"
+            elif name in ("create_pptx","create_dxf"): cat = "document"
+            elif name.startswith("send_email") or name.startswith("read_emails") or name.startswith("list_calendar") or name.startswith("create_event") or name.startswith("search_contacts"): cat = "email"
+
+            healthy = True
+            if name.startswith("video_"): healthy = deps["ffmpeg"]
+            elif name == "create_pptx": healthy = deps["python-pptx"]
+            elif name == "create_dxf": healthy = deps["ezdxf"]
+            elif name == "ocr": healthy = deps["tesseract"]
+
+            catalog.append({
+                "name": name, "category": cat, "params": params,
+                "description": t["description"][:80],
+                "healthy": healthy
+            })
+        return {"ok": True, "total": len(catalog), "catalog": catalog,
+                "dependencies": deps}
+
     # ═══════ v4.0 Routes: RAG, Plugins, MCP, Email ═══════
 
     @app.get("/api/rag/search")
