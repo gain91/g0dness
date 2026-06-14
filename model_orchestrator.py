@@ -5,8 +5,16 @@ AutoGen 多模型编排器
 import os, json, asyncio
 from typing import Optional
 
-# API Key 加载 — 优先加密 vault，降级明文
+# API Key 加载 — 优先明文(快)，可选加密 vault
 def load_keys():
+    # 明文文件优先 — 避免 key_vault/cryptography 导入耗时
+    env_file = os.path.expanduser("~/.model_keys.json")
+    if os.path.exists(env_file):
+        with open(env_file) as f:
+            keys = json.load(f)
+        if keys:
+            return keys
+    # 降级：加密 vault (如有)
     try:
         from key_vault import load_keys as _load
         keys = _load()
@@ -14,11 +22,6 @@ def load_keys():
             return keys
     except ImportError:
         pass
-    # Fallback: plaintext file
-    env_file = os.path.expanduser("~/.model_keys.json")
-    if os.path.exists(env_file):
-        with open(env_file) as f:
-            return json.load(f)
     return {}
 
 def save_keys(keys):
@@ -86,7 +89,12 @@ def _load_deepseek_config():
         "display": "DeepSeek V4 Pro (100万ctx)",
     }
 
-DEEPSEEK_CONFIG = _load_deepseek_config()
+DEEPSEEK_CONFIG = None  # Lazy init: avoid blocking import during module load
+def get_deepseek_config():
+    global DEEPSEEK_CONFIG
+    if DEEPSEEK_CONFIG is None:
+        DEEPSEEK_CONFIG = _load_deepseek_config()
+    return DEEPSEEK_CONFIG
 
 # ═══════ AI Gateway — 统一多提供商抽象 ═══════
 
@@ -236,15 +244,15 @@ def chat_deepseek(prompt: str, system: str = "") -> str:
     messages = []
     sys_text = system if system else CACHE_SYSTEM_PROMPT
     body = json.dumps({
-        "model": DEEPSEEK_CONFIG["model"],
+        "model": get_deepseek_config()["model"],
         "max_tokens": 8192,
         "system": sys_text,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False
     }).encode()
-    req = ur.Request(f"{DEEPSEEK_CONFIG['base_url']}/v1/messages", body,
+    req = ur.Request(f"{get_deepseek_config()['base_url']}/v1/messages", body,
                       headers={"Content-Type": "application/json",
-                               "x-api-key": DEEPSEEK_CONFIG["api_key"],
+                               "x-api-key": get_deepseek_config()["api_key"],
                                "anthropic-version": "2023-06-01"})
     resp = json.loads(ur.urlopen(req, timeout=180).read())
     # Anthropic format: content is a list of blocks
@@ -258,15 +266,15 @@ def stream_deepseek(prompt: str, system: str = ""):
     import urllib.request as ur
     sys_text = system if system else CACHE_SYSTEM_PROMPT
     body = json.dumps({
-        "model": DEEPSEEK_CONFIG["model"],
+        "model": get_deepseek_config()["model"],
         "max_tokens": 8192,
         "system": sys_text,
         "messages": [{"role": "user", "content": prompt}],
         "stream": True
     }).encode()
-    req = ur.Request(f"{DEEPSEEK_CONFIG['base_url']}/v1/messages", body,
+    req = ur.Request(f"{get_deepseek_config()['base_url']}/v1/messages", body,
                       headers={"Content-Type": "application/json",
-                               "x-api-key": DEEPSEEK_CONFIG["api_key"],
+                               "x-api-key": get_deepseek_config()["api_key"],
                                "anthropic-version": "2023-06-01"})
     resp = ur.urlopen(req, timeout=180)
     for line_bytes in resp:
