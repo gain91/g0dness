@@ -1,6 +1,6 @@
 [package]
 name = "ai-suite"
-version = "3.0.0"
+version = "4.1.0"
 edition = "2021"
 description = "AI Suite Desktop — Agent-powered AI assistant"
 
