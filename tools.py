@@ -4,6 +4,51 @@ AI Suite — Tool System (MCP-compatible)
 """
 import os, subprocess, json, tempfile
 
+# ═══════ 代理配置 ═══════
+# 工具自动检测本地代理（Clash/V2Ray），检测成功则走代理访问外网
+_PROXY_URL = None
+_PROXY_CHECKED = False
+
+def _get_opener():
+    """Return (opener, proxy_url) — opener uses proxy if available"""
+    global _PROXY_URL, _PROXY_CHECKED
+    import urllib.request as _ur
+
+    if not _PROXY_CHECKED:
+        _PROXY_CHECKED = True
+        candidates = [
+            "http://127.0.0.1:7890",   # Clash (default)
+            "http://127.0.0.1:7897",   # Clash (alt)
+            "http://127.0.0.1:10809",  # V2RayN
+            "http://127.0.0.1:1080",   # SOCKS5
+        ]
+        for proxy in candidates:
+            try:
+                ph = _ur.ProxyHandler({"http": proxy, "https": proxy})
+                opener = _ur.build_opener(ph)
+                # Quick connectivity test via proxy
+                opener.open("https://www.bing.com", timeout=5)
+                _PROXY_URL = proxy
+                break
+            except Exception:
+                pass
+
+    if _PROXY_URL:
+        ph = _ur.ProxyHandler({"http": _PROXY_URL, "https": _PROXY_URL})
+        return _ur.build_opener(ph), _PROXY_URL
+    return _ur.build_opener(_ur.HTTPHandler), None
+
+def _urlopen(url, timeout=15):
+    """urlopen with proxy detection"""
+    import urllib.request as _ur
+    opener, _ = _get_opener()
+    if isinstance(url, str):
+        req = _ur.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        return opener.open(req, timeout=timeout)
+    return opener.open(url, timeout=timeout)
+
 TOOLS = {}
 
 def register(name, description, handler, schema=None):
@@ -128,8 +173,10 @@ def tool_clipboard_write(text):
 def tool_web_fetch(url):
     import urllib.request as ur
     try:
-        req = ur.Request(url, headers={"User-Agent": "AI-Suite/1.0"})
-        resp = ur.urlopen(req, timeout=15)
+        req = ur.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        resp = _urlopen(req, timeout=15)
         content = resp.read().decode("utf-8", errors="replace")[:10000]
         return {"ok": True, "content": content, "status": resp.status}
     except Exception as e:
@@ -137,20 +184,51 @@ def tool_web_fetch(url):
 
 def tool_web_search(query):
     import urllib.request as ur
+    import re
+
+    def _try_search(url, snippet_pattern, result_count=5):
+        """Try a search engine, return results list (empty on failure)"""
+        req = ur.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        resp = _urlopen(req, timeout=15)
+        content = resp.read().decode("utf-8", errors="replace")[:120000]
+        snippets = re.findall(snippet_pattern, content, re.DOTALL)
+        results = []
+        for s in snippets[:result_count]:
+            clean = re.sub(r'<[^>]+>', '', s).strip()
+            if clean and len(clean) > 10:
+                results.append(clean)
+        return results
+
+    # Try Bing first
+    try:
+        url = f"https://www.bing.com/search?q={ur.quote(query)}&setlang=zh-cn"
+        results = _try_search(url, r'<p[^>]*class="b_lineclamp\d+"[^>]*>(.*?)</p>', 5)
+        if results:
+            return {"ok": True, "results": results, "source": "bing"}
+    except Exception:
+        pass
+
+    # Fallback: DuckDuckGo HTML
     try:
         url = f"https://html.duckduckgo.com/html/?q={ur.quote(query)}"
-        req = ur.Request(url, headers={"User-Agent": "AI-Suite/1.0"})
-        resp = ur.urlopen(req, timeout=15)
-        content = resp.read().decode("utf-8", errors="replace")[:8000]
-        # crude extraction of result snippets
-        results = []
-        import re
-        snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', content, re.DOTALL)
-        for s in snippets[:5]:
-            results.append(re.sub(r'<[^>]+>', '', s).strip())
-        return {"ok": True, "results": results}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+        results = _try_search(url, r'class="result__snippet"[^>]*>(.*?)</a>', 5)
+        if results:
+            return {"ok": True, "results": results, "source": "duckduckgo"}
+    except Exception:
+        pass
+
+    # Last fallback: DuckDuckGo lite
+    try:
+        url = f"https://lite.duckduckgo.com/lite/?q={ur.quote(query)}"
+        results = _try_search(url, r'<td[^>]*class="result-snippet"[^>]*>(.*?)</td>', 5)
+        if results:
+            return {"ok": True, "results": results, "source": "duckduckgo-lite"}
+    except Exception:
+        pass
+
+    return {"ok": False, "error": "All search engines unreachable (network restriction?)"}
 
 # ─── Desktop Tools (v3.0) ───
 
