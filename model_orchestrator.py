@@ -22,9 +22,10 @@ def load_keys():
     return {}
 
 def save_keys(keys):
-    with open(ENV_FILE, "w") as f:
+    env_file = os.path.expanduser("~/.model_keys.json")
+    with open(env_file, "w") as f:
         json.dump(keys, f, indent=2)
-    os.chmod(ENV_FILE, 0o600) if os.name != "nt" else None
+    os.chmod(env_file, 0o600) if os.name != "nt" else None
 
 # ═══════ Agent 配置 ═══════
 OLLAMA_CONFIG = {
@@ -76,12 +77,16 @@ OPENROUTER_MODELS = {
 }
 
 # DeepSeek via Anthropic-compatible API (same endpoint as Claude Code)
-DEEPSEEK_CONFIG = {
-    "base_url": "https://api.deepseek.com/anthropic",
-    "api_key": "sk-fa62cb70a70343dba531bf2cc48a57e3",
-    "model": "deepseek-v4-pro",
-    "display": "DeepSeek V4 Pro (100万ctx)",
-}
+def _load_deepseek_config():
+    keys = load_keys()
+    return {
+        "base_url": "https://api.deepseek.com/anthropic",
+        "api_key": keys.get("deepseek_key", ""),
+        "model": "deepseek-v4-pro",
+        "display": "DeepSeek V4 Pro (100万ctx)",
+    }
+
+DEEPSEEK_CONFIG = _load_deepseek_config()
 
 # ═══════ 简易编排（不用完整 AutoGen 重依赖）══
 try:

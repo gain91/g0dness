@@ -238,8 +238,13 @@ class Agent:
         if not api_key:
             raise RuntimeError("OpenRouter key not set")
         model_id = OPENROUTER_MODELS.get(self.model_key, OPENROUTER_MODELS["claude"])
-        # Build messages — skip system from self.messages (already adding our own)
-        msgs = [{"role": "system", "content": CACHE_SYSTEM_PROMPT + "\n" + AGENT_SYSTEM}]
+        # Build messages — use system prompt from self.messages (includes persona)
+        sys_content = CACHE_SYSTEM_PROMPT + "\n" + AGENT_SYSTEM
+        for m in self.messages:
+            if m["role"] == "system":
+                sys_content = m["content"]
+                break
+        msgs = [{"role": "system", "content": sys_content}]
         for m in self.messages:
             if m["role"] != "system":
                 msgs.append(m)
@@ -839,7 +844,7 @@ def register_routes(app):
                     r = subprocess.run([nvsmi, "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
                                        "--format=csv,noheader,nounits"],
                                       capture_output=True, text=True, timeout=5,
-                                      creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                                      creationflags=subprocess.CREATE_NO_WINDOW if _os.name == "nt" else 0)
                     parts = r.stdout.strip().split(",")
                     if len(parts) >= 4:
                         info["gpu_percent"] = int(float(parts[0].strip()))
