@@ -654,6 +654,10 @@ Agent 的最后回复: {last_text}
                 continue
 
             # 3. 无工具调用 → 目标检测后决定是否完成
+            if not text and not tool_calls:
+                # Empty response — avoid infinite loop
+                steps.append({"turn": turn, "final": True, "text": "(empty response)"})
+                return {"success": False, "result": "Agent returned empty response", "turns": turn+1, "steps": steps}
             steps_summary = " · ".join(
                 f"step{s.get('turn',0)}: {str(s.get('final',''))[:80] if s.get('final') else str([t['name'] for t in s.get('tools',[])])}"
                 for s in steps[-3:]
@@ -671,6 +675,7 @@ Agent 的最后回复: {last_text}
             self.messages.append({"role": "assistant", "content": text})
             self.messages.append({"role": "user",
                 "content": "[系统提示] 目标检测器认为任务未完成。请继续执行未完成的部分，不要重复已完成的工作。"})
+            continue
 
         # 超过最大轮次
         return {
@@ -760,6 +765,9 @@ Agent 的最后回复: {last_text}
                 continue
 
             # Goal check before declaring done
+            if not text and not tool_calls:
+                yield {"type": "error", "error": "Agent returned empty response"}
+                return
             steps_summary = " · ".join(
                 f"step{s.get('turn',0)}: {str(s.get('final',''))[:80] if s.get('final') else ''}"
                 for s in [{"turn": turn, "final": text[:80]}]
@@ -771,6 +779,7 @@ Agent 的最后回复: {last_text}
             self.messages.append({"role": "assistant", "content": text})
             self.messages.append({"role": "user",
                 "content": "[系统提示] 目标检测器认为任务未完成。请继续执行未完成的部分，不要重复已完成的工作。"})
+            continue
 
         yield {"type": "error", "error": f"达到最大轮次 ({self.max_turns})"}
 
