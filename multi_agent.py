@@ -135,8 +135,9 @@ def decompose_task(task: str) -> List[Dict]:
 
     # Always add a synthesizer if multiple steps
     if len(steps) > 1:
+        dep_indices = list(range(len(steps)))  # all existing steps
         steps.append({"role": "general", "task": "综合分析上述结果，给出最终答案。原始任务: " + task,
-                       "depends_on": list(range(len(steps) - 1))})
+                       "depends_on": dep_indices})
 
     return steps
 

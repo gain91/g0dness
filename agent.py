@@ -343,13 +343,10 @@ class Agent:
             elif block.get("type") == "tool_use":
                 tool_calls.append({
                     "id": block.get("id", f"tc_{self._tool_id_counter}"),
-                    "function": {"name": block.get("name", ""), "input": block.get("input", {})}
+                    "function": {"name": block.get("name", ""),
+                                 "arguments": block.get("input", {})}
                 })
                 self._tool_id_counter += 1
-        # Normalize: Anthropic uses "input", OpenAI format uses "arguments"
-        for tc in tool_calls:
-            if "input" in tc["function"] and "arguments" not in tc["function"]:
-                tc["function"]["arguments"] = tc["function"]["input"]
         return text, tool_calls
 
     def _parse_openrouter(self, response: dict) -> tuple:
@@ -375,32 +372,38 @@ class Agent:
         msg = response.get("message", {})
         text = msg.get("content", "") or ""
         tool_calls = []
-        # 查找 ```tool ... ``` 代码块
+        seen = set()  # dedup by tool name
         import re
         pattern = r'```tool\s*\n(.*?)\n```'
         matches = re.findall(pattern, text, re.DOTALL)
         for m in matches:
             try:
                 data = json.loads(m.strip())
-                tool_calls.append({
-                    "id": f"tc_{self._tool_id_counter}",
-                    "function": {"name": data["name"], "arguments": data.get("args", {})}
-                })
-                self._tool_id_counter += 1
+                key = data["name"] + ":" + json.dumps(data.get("args", {}), sort_keys=True)
+                if key not in seen:
+                    seen.add(key)
+                    tool_calls.append({
+                        "id": f"tc_{self._tool_id_counter}",
+                        "function": {"name": data["name"], "arguments": data.get("args", {})}
+                    })
+                    self._tool_id_counter += 1
             except (json.JSONDecodeError, KeyError):
                 pass
-        # 也尝试 ```json
+        # 也尝试 ```json (但跳过已见过的工具+参数组合)
         pattern2 = r'```json\s*\n(.*?)\n```'
         matches2 = re.findall(pattern2, text, re.DOTALL)
         for m in matches2:
             try:
                 data = json.loads(m.strip())
                 if "name" in data and "args" in data:
-                    tool_calls.append({
-                        "id": f"tc_{self._tool_id_counter}",
-                        "function": {"name": data["name"], "arguments": data["args"]}
-                    })
-                    self._tool_id_counter += 1
+                    key = data["name"] + ":" + json.dumps(data["args"], sort_keys=True)
+                    if key not in seen:
+                        seen.add(key)
+                        tool_calls.append({
+                            "id": f"tc_{self._tool_id_counter}",
+                            "function": {"name": data["name"], "arguments": data["args"]}
+                        })
+                        self._tool_id_counter += 1
             except (json.JSONDecodeError, KeyError):
                 pass
         # 去掉 tool 块，保留纯文本
@@ -676,7 +679,7 @@ Agent 的最后回复: {last_text}
                     "model": self.model_key
                 }
             # Not done yet — push feedback and continue
-            self.messages.append({"role": "assistant", "content": text})
+            self.messages.append({"role": "assistant", "content": text, "tool_calls": None})
             self.messages.append({"role": "user",
                 "content": "[系统提示] 目标检测器认为任务未完成。请继续执行未完成的部分，不要重复已完成的工作。"})
             continue
@@ -778,7 +781,7 @@ Agent 的最后回复: {last_text}
                 yield {"type": "done", "text": text, "turns": turn + 1}
                 return
             yield {"type": "goal_check", "msg": "目标未完成，继续..."}
-            self.messages.append({"role": "assistant", "content": text})
+            self.messages.append({"role": "assistant", "content": text, "tool_calls": None})
             self.messages.append({"role": "user",
                 "content": "[系统提示] 目标检测器认为任务未完成。请继续执行未完成的部分，不要重复已完成的工作。"})
             continue
@@ -884,7 +887,12 @@ def register_routes(app):
                                     safe[k] = str(v)[:1000]
                             else:
                                 safe[k] = v
-                        yield f"data: {json.dumps(safe, ensure_ascii=False)}\n\n"
+                        try:
+                            yield f"data: {json.dumps(safe, ensure_ascii=False)}\n\n"
+                        except Exception:
+                            # Last resort — force everything to string
+                            fallback = {k: str(v)[:500] for k, v in safe.items()}
+                            yield f"data: {json.dumps(fallback, ensure_ascii=False)}\n\n"
                 yield "data: [DONE]\n\n"
             except Exception as e:
                 yield f"data: {json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
@@ -989,8 +997,6 @@ def register_routes(app):
         for name in tools.TOOLS:
             if name.startswith("video_") and not ff:
                 health["unavailable"].append(name)
-            elif name == "screenshot" and not health["details"].get("Pillow", False):
-                health["unavailable"].append(name)  # has PowerShell fallback actually
             else:
                 health["available"] += 1
 

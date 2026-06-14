@@ -27,7 +27,9 @@ def _get_opener():
                 ph = _ur.ProxyHandler({"http": proxy, "https": proxy})
                 opener = _ur.build_opener(ph)
                 # Quick connectivity test via proxy
-                opener.open("https://www.bing.com", timeout=5)
+                import urllib.request as _ur2
+                head_req = _ur2.Request("https://www.bing.com", method="HEAD")
+                opener.open(head_req, timeout=5)
                 _PROXY_URL = proxy
                 break
             except Exception:
@@ -99,6 +101,12 @@ DANGEROUS_PATTERNS = [
     r'mkfs\.', r'dd\s+if=', r'>\s*/dev/', r'chmod\s+777\s+/',
     r'shutdown\s', r'reboot', r'halt', r'poweroff',
     r'wget\s.*\|.*sh', r'curl\s.*\|.*bash',
+    # Windows-specific
+    r'del\s+/[Ff]\s+/[Ss]\s+/[Qq]\s+\w:\\',  # del /f /s /q C:\
+    r'rd\s+/[Ss]\s+/[Qq]\s+\w:\\',             # rd /s /q C:\
+    r'diskpart', r'clean\s+all',                 # diskpart clean
+    r'Remove-Item\s+-Recurse\s+-Force\s+\w:\\', # PowerShell recursive delete
+    r'format\s+\w:', r'sfc\s+/scannow',         # system commands
 ]
 
 SAFE_WRITE_DIRS = [
