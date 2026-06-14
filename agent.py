@@ -982,6 +982,55 @@ def register_routes(app):
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    @app.get("/api/monitoring/stream")
+    async def api_monitoring_stream():
+        """SSE 实时推送系统监控数据（每 2 秒）"""
+        async def generate():
+            import asyncio as _aio
+            while True:
+                try:
+                    info = {}
+                    try:
+                        import psutil
+                        info["cpu_percent"] = psutil.cpu_percent(interval=0.3)
+                        vmem = psutil.virtual_memory()
+                        info["ram_total_gb"] = round(vmem.total / (1024**3), 1)
+                        info["ram_used_gb"] = round(vmem.used / (1024**3), 1)
+                        info["ram_percent"] = vmem.percent
+                        info["process_count"] = len(psutil.pids())
+                    except:
+                        info["cpu_percent"] = 0
+                        info["ram_percent"] = 0
+                    try:
+                        import shutil as _sh
+                        nvsmi = _sh.which("nvidia-smi")
+                        if nvsmi:
+                            r = subprocess.run([nvsmi, "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu",
+                                               "--format=csv,noheader,nounits"],
+                                              capture_output=True, text=True, timeout=3,
+                                              creationflags=subprocess.CREATE_NO_WINDOW if _os.name == "nt" else 0)
+                            parts = r.stdout.strip().split(",")
+                            if len(parts) >= 4:
+                                info["gpu_percent"] = int(float(parts[0].strip()))
+                                info["gpu_vram_used_mb"] = int(float(parts[1].strip()))
+                                info["gpu_vram_total_mb"] = int(float(parts[2].strip()))
+                                info["gpu_temp"] = int(float(parts[3].strip()))
+                    except:
+                        pass
+                    try:
+                        import shutil as sd
+                        disk = sd.disk_usage(_os.path.expanduser("~"))
+                        info["disk_total_gb"] = round(disk.total / (1024**3), 1)
+                        info["disk_used_gb"] = round(disk.used / (1024**3), 1)
+                    except:
+                        pass
+                    yield f"data: {json.dumps({'ok': True, 'info': info}, ensure_ascii=False)}\n\n"
+                except Exception as e:
+                    yield f"data: {json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False)}\n\n"
+                await _aio.sleep(2)
+        return StreamingResponse(generate(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
     # ═══════ v4.1: Multi-Agent Team ═══════
 
     @app.get("/api/team/roles")

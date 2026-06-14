@@ -1970,38 +1970,23 @@ async function showDashboard() {
     html += '</p>';
   } catch(e) { html += '<hr><p>🔧 工具健康: ❌ 编排器未连接</p>'; }
 
-  // v4.0: Real-time Monitoring
-  try {
-    let r = await fetch(ORCH_API + '/api/monitoring');
-    let m = await r.json();
-    if (m.ok) {
-      let i = m.info;
-      html += '<hr><h3 style="font-size:14px;margin-bottom:8px">📊 实时监控</h3>';
-      // CPU
-      html += `<div style="margin:6px 0"><span>CPU</span> <span style="float:right">${i.cpu_percent||0}%</span>
-        <div style="background:var(--border);height:6px;border-radius:3px;margin-top:2px">
-        <div style="background:${(i.cpu_percent||0)>80?'#ef4444':(i.cpu_percent||0)>50?'#f59e0b':'#10b981'};height:6px;border-radius:3px;width:${i.cpu_percent||0}%;transition:width .5s"></div></div></div>`;
-      // RAM
-      html += `<div style="margin:6px 0"><span>RAM</span> <span style="float:right">${i.ram_used_gb||0}/${i.ram_total_gb||0} GB (${i.ram_percent||0}%)</span>
-        <div style="background:var(--border);height:6px;border-radius:3px;margin-top:2px">
-        <div style="background:${(i.ram_percent||0)>80?'#ef4444':(i.ram_percent||0)>50?'#f59e0b':'#10b981'};height:6px;border-radius:3px;width:${i.ram_percent||0}%;transition:width .5s"></div></div></div>`;
-      // GPU if available
-      if (i.gpu_percent !== undefined) {
-        html += `<div style="margin:6px 0"><span>GPU</span> <span style="float:right">${i.gpu_percent}% · ${i.gpu_vram_used_mb||0}MB / ${i.gpu_vram_total_mb||0}MB · ${i.gpu_temp||0}°C</span>
-          <div style="background:var(--border);height:6px;border-radius:3px;margin-top:2px">
-          <div style="background:${i.gpu_percent>80?'#ef4444':i.gpu_percent>50?'#f59e0b':'#10b981'};height:6px;border-radius:3px;width:${i.gpu_percent}%;transition:width .5s"></div></div></div>`;
-      }
-      // Disk
-      if (i.disk_total_gb) {
-        let dp = Math.round((i.disk_used_gb||0)/(i.disk_total_gb||1)*100);
-        html += `<div style="margin:6px 0"><span>Disk</span> <span style="float:right">${i.disk_used_gb||0}/${i.disk_total_gb||0} GB (${dp}%)</span>
-          <div style="background:var(--border);height:6px;border-radius:3px;margin-top:2px">
-          <div style="background:${dp>90?'#ef4444':dp>70?'#f59e0b':'#10b981'};height:6px;border-radius:3px;width:${dp}%;transition:width .5s"></div></div></div>`;
-      }
-      // Background tasks
-      html += `<p style="margin-top:4px;font-size:11px;color:var(--muted)">🔄 进程: ${i.process_count||0} · 🤖 后台任务: ${i.background_tasks||0}</p>`;
-    }
-  } catch(e) {}
+  // v4.1: Live Monitoring via SSE
+  html += '<hr><h3 style="font-size:14px;margin-bottom:8px">📊 实时监控 <span style="font-size:10px;color:#10b981">● LIVE</span></h3>';
+  html += `<div id="dash-live" style="min-height:120px">
+    <div style="margin:6px 0"><span>CPU</span> <span class="ds-val" style="float:right">--</span>
+      <div style="background:var(--border);height:6px;border-radius:3px;margin-top:2px">
+      <div class="ds-bar" id="ds-cpu" style="background:#10b981;height:6px;border-radius:3px;width:0%;transition:width .5s"></div></div></div>
+    <div style="margin:6px 0"><span>RAM</span> <span class="ds-val" style="float:right">--</span>
+      <div style="background:var(--border);height:6px;border-radius:3px;margin-top:2px">
+      <div class="ds-bar" id="ds-ram" style="background:#10b981;height:6px;border-radius:3px;width:0%;transition:width .5s"></div></div></div>
+    <div style="margin:6px 0"><span>GPU</span> <span class="ds-val" style="float:right">--</span>
+      <div style="background:var(--border);height:6px;border-radius:3px;margin-top:2px">
+      <div class="ds-bar" id="ds-gpu" style="background:#10b981;height:6px;border-radius:3px;width:0%;transition:width .5s"></div></div></div>
+    <div style="margin:6px 0"><span>Disk</span> <span class="ds-val" style="float:right">--</span>
+      <div style="background:var(--border);height:6px;border-radius:3px;margin-top:2px">
+      <div class="ds-bar" id="ds-disk" style="background:#10b981;height:6px;border-radius:3px;width:0%;transition:width .5s"></div></div></div>
+    <p style="margin-top:4px;font-size:11px;color:var(--muted)" id="ds-meta">连接中...</p>
+  </div>`;
 
   // v4.0: RAG Memory
   try {
@@ -2045,9 +2030,50 @@ async function showDashboard() {
   html += '</div>';
   let overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
-  overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+
+  // Cleanup SSE on close
+  let _es = null;
+  function _stopSSE() { if (_es) { _es.close(); _es = null; } }
+  overlay._cleanup = _stopSSE;
+  overlay.onclick = function(e) { if (e.target === overlay) { _stopSSE(); overlay.remove(); } };
+
   overlay.innerHTML = html;
   document.body.appendChild(overlay);
+
+  // Connect SSE for live monitoring
+  try {
+    _es = new EventSource(ORCH_API + '/api/monitoring/stream');
+    _es.onmessage = function(e) {
+      let m = JSON.parse(e.data);
+      if (!m.ok) return;
+      let i = m.info;
+      // Update bars and labels
+      let setBar = (id, pct) => {
+        let el = document.getElementById(id);
+        if (el) { el.style.width = pct + '%'; el.style.background = pct > 80 ? '#ef4444' : pct > 50 ? '#f59e0b' : '#10b981'; }
+      };
+      setBar('ds-cpu', i.cpu_percent || 0);
+      setBar('ds-ram', i.ram_percent || 0);
+      let gp = i.gpu_percent !== undefined ? i.gpu_percent : 0;
+      setBar('ds-gpu', gp);
+      let dp = i.disk_total_gb ? Math.round((i.disk_used_gb || 0) / (i.disk_total_gb || 1) * 100) : 0;
+      setBar('ds-disk', dp);
+      // Update labels
+      let vals = document.querySelectorAll('#dash-live .ds-val');
+      if (vals.length >= 4) {
+        vals[0].textContent = (i.cpu_percent || 0) + '%';
+        vals[1].textContent = (i.ram_used_gb || 0) + '/' + (i.ram_total_gb || 0) + ' GB (' + (i.ram_percent || 0) + '%)';
+        vals[2].textContent = i.gpu_percent !== undefined ? i.gpu_percent + '% · ' + (i.gpu_vram_used_mb || 0) + 'MB / ' + (i.gpu_vram_total_mb || 0) + 'MB · ' + (i.gpu_temp || 0) + '°C' : 'N/A';
+        vals[3].textContent = i.disk_total_gb ? Math.round((i.disk_used_gb || 0) / (i.disk_total_gb || 1) * 100) + '% · ' + (i.disk_used_gb || 0) + '/' + (i.disk_total_gb || 0) + ' GB' : '--';
+      }
+      let meta = document.getElementById('ds-meta');
+      if (meta) meta.textContent = '🔄 进程: ' + (i.process_count || 0) + ' · 🤖 后台任务: ' + (i.background_tasks || 0);
+    };
+    _es.onerror = function() {
+      let meta = document.getElementById('ds-meta');
+      if (meta) meta.textContent = '⚠️ 连接中断，重连中...';
+    };
+  } catch(e) {}
 }
 
 // ═══════ Scheduler UI ═══════

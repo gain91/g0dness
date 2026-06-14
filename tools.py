@@ -1447,15 +1447,43 @@ register("video_crop", "裁剪视频画面区域 — Crop video", tool_video_cro
           "x": {"type": "integer", "optional": True}, "y": {"type": "integer", "optional": True},
           "width": {"type": "integer", "optional": True}, "height": {"type": "integer", "optional": True}})
 
+# ═══════ Tool Result Cache ═══════
+_TOOL_CACHE = {}  # {cache_key: (timestamp, result)}
+
+CACHE_TTL = {
+    "system_info": 15,      # 15s — hardware doesn't change fast
+    "web_search": 60,       # 60s — same query won't change
+    "get_windows": 5,       # 5s
+    "list_processes": 10,   # 10s
+    "get_volume": 5,
+    "mouse_pos": 0.5,       # 0.5s
+    "list_dir": 3,
+}
+
 def execute(tool_name, params):
     if tool_name not in TOOLS:
         return {"ok": False, "error": f"Unknown tool: {tool_name}"}
+
+    # Check cache for idempotent reads
+    ttl = CACHE_TTL.get(tool_name)
+    if ttl:
+        import time as _t
+        cache_key = f"{tool_name}:{json.dumps(params, sort_keys=True, default=str)}"
+        cached = _TOOL_CACHE.get(cache_key)
+        if cached and (_t.time() - cached[0]) < ttl:
+            return cached[1]
+
     try:
-        return TOOLS[tool_name]["handler"](**params)
+        result = TOOLS[tool_name]["handler"](**params)
     except TypeError as e:
-        return {"ok": False, "error": f"Invalid params: {e}"}
+        result = {"ok": False, "error": f"Invalid params: {e}"}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        result = {"ok": False, "error": str(e)}
+
+    # Cache successful results
+    if ttl and result.get("ok"):
+        _TOOL_CACHE[cache_key] = (_t.time(), result)
+    return result
 
 def list_tools():
     return [{"name": t["name"], "description": t["description"], "schema": t["schema"]}
