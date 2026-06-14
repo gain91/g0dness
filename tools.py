@@ -39,15 +39,23 @@ def _get_opener():
     return _ur.build_opener(_ur.HTTPHandler), None
 
 def _urlopen(url, timeout=15):
-    """urlopen with proxy detection"""
+    """urlopen with proxy detection — falls back to direct on proxy failure"""
     import urllib.request as _ur
-    opener, _ = _get_opener()
+    opener, proxy_url = _get_opener()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
     if isinstance(url, str):
-        req = _ur.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        })
-        return opener.open(req, timeout=timeout)
-    return opener.open(url, timeout=timeout)
+        req = _ur.Request(url, headers=headers)
+    else:
+        req = url
+    if proxy_url:
+        try:
+            return opener.open(req, timeout=timeout)
+        except Exception:
+            # Proxy failed — retry direct
+            return _ur.build_opener().open(req, timeout=timeout)
+    return opener.open(req, timeout=timeout)
 
 TOOLS = {}
 
@@ -115,7 +123,7 @@ def _sandbox_shell(command: str) -> dict:
 def _sandbox_path(path: str) -> dict:
     """Check if file path is safe to write to"""
     try:
-        abs_path = os.path.abspath(path).lower()
+        abs_path = os.path.abspath(os.path.expanduser(path)).lower()
     except:
         return {"ok": False, "error": f"Invalid path: {path}"}
     for safe_dir in SAFE_WRITE_DIRS:
@@ -466,7 +474,7 @@ def tool_screenshot_find(text_query: str):
     if (-not $engine) {{ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage("en") }}
     if ($engine) {{
         $result = $engine.RecognizeAsync($sb).GetAwaiter().GetResult()
-        $query = "{text_query}".ToLower()
+        $query = "{text_query.replace(chr(34), '').replace(chr(36), '').replace(chr(123), '').replace(chr(125), '')}".ToLower()
         $matches = @()
         foreach ($line in $result.Lines) {{
             foreach ($word in $line.Words) {{
@@ -558,8 +566,9 @@ def tool_type_text(text: str, interval: float = 0.02):
         KEYEVENTF_KEYUP = 0x0002
         for ch in text:
             vk = ord(ch)
-            ctypes.windll.user32.keybd_event(vk, 0, KEYEVENTF_UNICODE, 0)
-            ctypes.windll.user32.keybd_event(vk, 0, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0)
+            # KEYEVENTF_UNICODE: bVk must be 0, bScan holds the Unicode char
+            ctypes.windll.user32.keybd_event(0, vk, KEYEVENTF_UNICODE, 0)
+            ctypes.windll.user32.keybd_event(0, vk, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0)
             _time.sleep(interval)
         return {"ok": True, "length": len(text)}
     except Exception as e:
@@ -1032,15 +1041,7 @@ def tool_delete_file(path: str, permanent: bool = False):
                 send2trash.send2trash(path)
         return {"ok": True, "path": path, "permanent": permanent}
     except ImportError:
-        # send2trash not available, force permanent
-        try:
-            if os.path.isdir(path):
-                shutil.rmtree(path)
-            else:
-                os.unlink(path)
-            return {"ok": True, "path": path, "permanent": True, "note": "send2trash not installed, permanent delete used"}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": "send2trash not installed. Use permanent=True for direct delete, or pip install send2trash for recycle bin support."}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -1108,6 +1109,20 @@ def _run_ffmpeg(args: list, timeout: int = 120) -> dict:
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+def _safe_rframe(rate_str):
+    """Safely compute fps from ffprobe 'r_frame_rate' string like '30000/1001'"""
+    if '/' in rate_str:
+        try:
+            num, den = rate_str.split('/', 1)
+            n, d = float(num), float(den)
+            return round(n / d, 3) if d != 0 else 0.0
+        except (ValueError, ZeroDivisionError):
+            return 0.0
+    try:
+        return float(rate_str)
+    except ValueError:
+        return 0.0
+
 def _ffmpeg_safe_path(path: str) -> str:
     """Check path is valid, return absolute"""
     abs_path = os.path.abspath(path)
@@ -1148,7 +1163,7 @@ def tool_video_info(video_path: str):
                         "bitrate_kbps": int(int(fmt.get("bit_rate", 0)) / 1000),
                         "video_codec": video_stream.get("codec_name", ""),
                         "resolution": f"{video_stream.get('width', '?')}x{video_stream.get('height', '?')}",
-                        "fps": eval(str(video_stream.get("r_frame_rate", "0/1"))),
+                        "fps": _safe_rframe(video_stream.get("r_frame_rate", "0/1")),
                         "audio_codec": audio_stream.get("codec_name", ""),
                         "audio_channels": audio_stream.get("channels", 0),
                         "has_audio": bool(audio_stream)}

@@ -194,7 +194,7 @@ class Agent:
                         json.dumps(body).encode(),
                         headers={"Content-Type": "application/json"})
         resp = ur.urlopen(req, timeout=180)
-        accumulated = {"content": "", "tool_calls": []}
+        accumulated = {"content": "", "tool_calls": {}}
         for line_bytes in resp:
             line = line_bytes.decode("utf-8", errors="replace").strip()
             if not line: continue
@@ -205,14 +205,20 @@ class Agent:
                 if token:
                     accumulated["content"] += token
                     yield (token, None)
+                # Merge tool calls by index to avoid duplicates from progressive streaming
                 for tc in msg.get("tool_calls", []):
-                    accumulated["tool_calls"].append(tc)
+                    idx = tc.get("index", len(accumulated["tool_calls"]))
+                    accumulated["tool_calls"][idx] = tc
                 if chunk.get("done"):
-                    yield (None, accumulated)
+                    final_tools = [accumulated["tool_calls"][k]
+                                   for k in sorted(accumulated["tool_calls"])]
+                    yield (None, {"content": accumulated["content"], "tool_calls": final_tools})
                     return
             except json.JSONDecodeError:
                 pass
-        yield (None, accumulated)
+        final_tools = [accumulated["tool_calls"][k]
+                       for k in sorted(accumulated["tool_calls"])]
+        yield (None, {"content": accumulated["content"], "tool_calls": final_tools})
 
     def _call_deepseek(self) -> dict:
         """调用 DeepSeek V4 Anthropic Messages API"""
@@ -494,8 +500,7 @@ class Agent:
                 plan = json.loads(json_match.group())
                 return {"ok": True, "plan": plan, "task": task}
         except Exception as e:
-            pass
-        return {"ok": False, "error": "Plan generation failed"}
+            return {"ok": False, "error": f"Plan generation failed: {e}"}
 
     # ─── Goal Check ───
 
@@ -529,7 +534,7 @@ Agent 的最后回复: {last_text}
             answer = resp.get("message", {}).get("content", "YES").strip().upper()
             return answer.startswith("YES")
         except Exception:
-            return True  # If goal checker fails, trust the agent (don't loop forever)
+            return False  # Checker failure — don't trust, let agent continue
 
     def review(self, task: str, agent_output: str, steps: list = None) -> dict:
         """对抗审查 — 用第二个模型审查 Agent 输出"""
@@ -577,9 +582,7 @@ Agent 的最后回复: {last_text}
         """
         mt = self._model_type
         # 检测 Ollama 模型是否支持原生 tool calling
-        use_ollama_tools = mt == "ollama" and self._ollama_model not in (
-            "deepseek-r1:14b",  # DeepSeek-R1 不支持原生 tool calling
-        )
+        use_ollama_tools = mt == "ollama" and "deepseek-r1" not in self._ollama_model
         is_fallback = (mt == "ollama" and not use_ollama_tools)
 
         # 初始化消息
@@ -620,9 +623,10 @@ Agent 的最后回复: {last_text}
                 # LLM 调用失败
                 steps.append({"turn": turn, "error": str(e)})
                 err_msg = f"模型调用失败: {e}"
-                # 尝试降级到 Ollama
+                # 尝试降级到 Ollama (更换 system prompt 以支持 tool markdown)
                 if mt != "ollama":
                     try:
+                        self.messages[0] = {"role": "system", "content": AGENT_SYSTEM_FALLBACK}
                         resp = self._call_ollama(use_tools=False)
                         text, tool_calls = self._parse_fallback(resp)
                     except:
@@ -692,9 +696,7 @@ Agent 的最后回复: {last_text}
         yield: {type: "thinking"|"tool_call"|"tool_result"|"text"|"done"|"error", ...}
         """
         mt = self._model_type
-        use_ollama_tools = mt == "ollama" and self._ollama_model not in (
-            "deepseek-r1:14b",
-        )
+        use_ollama_tools = mt == "ollama" and "deepseek-r1" not in self._ollama_model
         is_fallback = (mt == "ollama" and not use_ollama_tools)
 
         sys_content = AGENT_SYSTEM_FALLBACK if is_fallback else AGENT_SYSTEM
