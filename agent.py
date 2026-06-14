@@ -418,13 +418,25 @@ class Agent:
         return results
 
     def _chain_hints(self, exec_results: list) -> str:
-        """v4.1: 工具链 — 分析结果，生成下一步提示"""
+        """v4.1+: 工具链 + 错误恢复 — 分析结果，生成下一步提示"""
         hints = []
         for er in exec_results:
             name = er["name"]
             res = er.get("result", {})
             if not res.get("ok"):
-                hints.append(f"{name} 失败: {res.get('error','')[:100]}")
+                err = res.get('error','')[:100]
+                hints.append(f"❌ {name} 失败: {err}")
+                # Error recovery hints — suggest concrete fixes
+                if "not found" in err.lower() or "不存在" in err or "ENOENT" in err:
+                    hints.append(f"→ 建议: 用 list_dir 确认路径是否存在，或尝试其他路径")
+                elif "permission" in err.lower() or "denied" in err or "拒绝" in err:
+                    hints.append(f"→ 建议: 尝试其他目录（如 ~/Desktop 或 ~/Downloads），或跳过此文件")
+                elif "timeout" in err.lower() or "超时" in err:
+                    hints.append(f"→ 建议: 简化操作重试，或分割成更小步骤")
+                elif "ffmpeg" in err.lower() and "not found" in err.lower():
+                    hints.append(f"→ 建议: 视频工具需要 ffmpeg，尝试用 shell 安装或跳过视频处理")
+                else:
+                    hints.append(f"→ 建议: 分析错误原因，尝试替代方案或跳过此步骤")
                 continue
             # Auto-chain patterns
             if name == "list_dir" and res.get("items"):
@@ -444,6 +456,117 @@ class Agent:
                 if info.get("ram_used_pct", 0) > 80:
                     hints.append("内存占用高，检查 list_processes 找大内存进程")
         return "\n".join(hints) if hints else ""
+
+    # ─── Plan Mode ───
+
+    def plan(self, task: str, system: str = "") -> dict:
+        """生成执行计划后暂停，等待用户确认"""
+        plan_prompt = f"""分析以下任务，生成逐步执行计划。只输出计划，不执行。
+
+任务: {task}
+
+输出格式（JSON 数组）:
+[{{"step": 1, "action": "描述动作", "tools": ["需要的工具"], "reason": "为什么需要这步"}}]
+
+规则:
+- 3-6 步，每步明确可操作
+- 先探索/调查，再修改/操作
+- 有依赖关系的步骤按顺序排列
+"""
+        try:
+            import urllib.request as _ur2
+            body = json.dumps({
+                "model": "qwen3:8b",
+                "messages": [
+                    {"role": "system", "content": "你是任务规划专家。输出纯 JSON 数组。"},
+                    {"role": "user", "content": plan_prompt}
+                ],
+                "stream": False,
+                "options": {"temperature": 0.3}
+            }).encode()
+            req = _ur2.Request("http://localhost:11434/api/chat", body,
+                              headers={"Content-Type": "application/json"})
+            resp = json.loads(_ur2.urlopen(req, timeout=30).read())
+            content = resp.get("message", {}).get("content", "")
+            import re
+            json_match = re.search(r'\[.*\]', content, re.DOTALL)
+            if json_match:
+                plan = json.loads(json_match.group())
+                return {"ok": True, "plan": plan, "task": task}
+        except Exception as e:
+            pass
+        return {"ok": False, "error": "Plan generation failed"}
+
+    # ─── Goal Check ───
+
+    GOAL_CHECK_PROMPT = """检查任务是否真正完成。不要假装完成——如果还有未做的事，诚实说 NO。
+
+原始任务: {task}
+
+Agent 的最后回复: {last_text}
+
+已完成的操作步骤（摘要）: {steps_summary}
+
+只回复 YES 或 NO，然后一行简短理由。"""
+
+    def _check_goal(self, task: str, last_text: str, steps_summary: str) -> bool:
+        """用廉价模型检查任务是否真正完成"""
+        try:
+            import urllib.request as _ur3
+            body = json.dumps({
+                "model": "qwen3:8b",
+                "messages": [
+                    {"role": "system", "content": "你只回复 YES 或 NO，然后简短理由。不要废话。"},
+                    {"role": "user", "content": self.GOAL_CHECK_PROMPT.format(
+                        task=task, last_text=last_text[:2000], steps_summary=steps_summary[:500])}
+                ],
+                "stream": False,
+                "options": {"temperature": 0.1}
+            }).encode()
+            req = _ur3.Request("http://localhost:11434/api/chat", body,
+                              headers={"Content-Type": "application/json"})
+            resp = json.loads(_ur3.urlopen(req, timeout=15).read())
+            answer = resp.get("message", {}).get("content", "YES").strip().upper()
+            return answer.startswith("YES")
+        except Exception:
+            return True  # If goal checker fails, trust the agent (don't loop forever)
+
+    def review(self, task: str, agent_output: str, steps: list = None) -> dict:
+        """对抗审查 — 用第二个模型审查 Agent 输出"""
+        steps_text = ""
+        if steps:
+            steps_text = "操作步骤:\n" + "\n".join(
+                f"- turn {s.get('turn', '?')}: {str(s.get('final', ''))[:200] if s.get('final') else str([t.get('name','') for t in s.get('tools',[])])}"
+                for s in steps[-5:]
+            )
+        try:
+            import urllib.request as _ur4
+            body = json.dumps({
+                "model": "qwen3:8b",
+                "messages": [
+                    {"role": "system", "content": """你是严格的质量审查员。审查 Agent 输出，找出:
+1. 是否遗漏了任务要求
+2. 是否有事实错误或幻觉
+3. 操作是否安全（没有删除重要文件等）
+4. 建议改进的地方
+输出 JSON: {"pass": true/false, "score": 1-10, "issues": ["问题1"], "suggestions": ["建议1"]}"""},
+                    {"role": "user", "content": f"任务: {task}\n\nAgent 输出:\n{agent_output[:3000]}\n\n{steps_text}"}
+                ],
+                "stream": False,
+                "options": {"temperature": 0.2}
+            }).encode()
+            req = _ur4.Request("http://localhost:11434/api/chat", body,
+                              headers={"Content-Type": "application/json"})
+            resp = json.loads(_ur4.urlopen(req, timeout=30).read())
+            content = resp.get("message", {}).get("content", "")
+            import re
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                review = json.loads(json_match.group())
+                return {"ok": True, "review": review}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": "Review parsing failed"}
 
     # ─── 主循环 ───
 
@@ -530,15 +653,24 @@ class Agent:
                     self.messages.append({"role": "user", "content": f"[系统提示] {hint}"})
                 continue
 
-            # 3. 无工具调用 → 任务完成
-            steps.append({"turn": turn, "final": True, "text": text})
-            return {
-                "success": True,
-                "result": text,
-                "turns": turn + 1,
-                "steps": steps,
-                "model": self.model_key
-            }
+            # 3. 无工具调用 → 目标检测后决定是否完成
+            steps_summary = " · ".join(
+                f"step{s.get('turn',0)}: {str(s.get('final',''))[:80] if s.get('final') else str([t['name'] for t in s.get('tools',[])])}"
+                for s in steps[-3:]
+            )
+            if self._check_goal(task, text, steps_summary):
+                steps.append({"turn": turn, "final": True, "text": text})
+                return {
+                    "success": True,
+                    "result": text,
+                    "turns": turn + 1,
+                    "steps": steps,
+                    "model": self.model_key
+                }
+            # Not done yet — push feedback and continue
+            self.messages.append({"role": "assistant", "content": text})
+            self.messages.append({"role": "user",
+                "content": "[系统提示] 目标检测器认为任务未完成。请继续执行未完成的部分，不要重复已完成的工作。"})
 
         # 超过最大轮次
         return {
@@ -627,8 +759,18 @@ class Agent:
                     self.messages.append({"role": "user", "content": f"[系统提示] {hint}"})
                 continue
 
-            yield {"type": "done", "text": text, "turns": turn + 1}
-            return
+            # Goal check before declaring done
+            steps_summary = " · ".join(
+                f"step{s.get('turn',0)}: {str(s.get('final',''))[:80] if s.get('final') else ''}"
+                for s in [{"turn": turn, "final": text[:80]}]
+            )
+            if self._check_goal(task, text, steps_summary):
+                yield {"type": "done", "text": text, "turns": turn + 1}
+                return
+            yield {"type": "goal_check", "msg": "目标未完成，继续..."}
+            self.messages.append({"role": "assistant", "content": text})
+            self.messages.append({"role": "user",
+                "content": "[系统提示] 目标检测器认为任务未完成。请继续执行未完成的部分，不要重复已完成的工作。"})
 
         yield {"type": "error", "error": f"达到最大轮次 ({self.max_turns})"}
 
@@ -668,6 +810,37 @@ def register_routes(app):
         agent = Agent(model_key=model)
         result = agent.run(task, system=system)
         return result
+
+    @app.post("/api/agent/plan")
+    async def api_agent_plan(request: Request):
+        """生成执行计划（先规划再执行）"""
+        try:
+            raw = await request.body()
+            data = json.loads(raw.decode("utf-8", errors="replace"))
+        except Exception:
+            data = {}
+        task = data.get("task", "").strip()
+        if not task:
+            return JSONResponse({"error": "empty task"}, 400)
+        model = data.get("model", "deepseek")
+        system = data.get("system", "")
+        agent = Agent(model_key=model)
+        return agent.plan(task, system=system)
+
+    @app.post("/api/agent/review")
+    async def api_agent_review(request: Request):
+        """对抗审查 Agent 输出"""
+        try:
+            raw = await request.body()
+            data = json.loads(raw.decode("utf-8", errors="replace"))
+        except Exception:
+            data = {}
+        task = data.get("task", "").strip()
+        output = data.get("output", "").strip()
+        if not task or not output:
+            return JSONResponse({"error": "task and output required"}, 400)
+        agent = Agent()
+        return agent.review(task, output, data.get("steps"))
 
     @app.post("/api/agent/stream")
     async def api_agent_stream(request: Request):
