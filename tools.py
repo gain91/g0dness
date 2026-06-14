@@ -4,6 +4,15 @@ AI Suite — Tool System (MCP-compatible)
 """
 import os, subprocess, json, tempfile
 
+# ═══════ MarkItDown 集成（微软开源）═══════
+try:
+    from markitdown import MarkItDown as _MD
+    _md = _MD()
+    HAS_MARKITDOWN = True
+except ImportError:
+    _md = None
+    HAS_MARKITDOWN = False
+
 # ═══════ 代理配置 ═══════
 # 工具自动检测本地代理（Clash/V2Ray），检测成功则走代理访问外网
 _PROXY_URL = None
@@ -792,6 +801,32 @@ register("create_pptx", "生成 PowerPoint 演示文稿 — Generate PPTX", tool
          {"title": {"type": "string"}, "slides_json": {"type": "string"}, "output_path": {"type": "string", "optional": True}})
 register("create_dxf", "生成 CAD DXF 图纸 — Generate DXF drawing", tool_create_dxf,
          {"filename": {"type": "string"}, "entities_json": {"type": "string"}, "units": {"type": "string", "optional": True}})
+
+# ─── MarkItDown 文档转换工具 ───
+
+def tool_convert_to_md(file_path: str, output_path: str = ""):
+    """将任意文档格式转换为 Markdown（基于微软 MarkItDown）"""
+    if not HAS_MARKITDOWN:
+        return {"ok": False, "error": "markitdown not installed. pip install markitdown[all]"}
+    if not os.path.exists(file_path):
+        return {"ok": False, "error": f"File not found: {file_path}"}
+    try:
+        result = _md.convert(file_path)
+        md_content = result.text_content[:50000]
+        if output_path:
+            os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(md_content)
+            return {"ok": True, "output": output_path, "chars": len(md_content),
+                    "source": file_path}
+        return {"ok": True, "content": md_content, "chars": len(md_content),
+                "source": file_path, "truncated": len(result.text_content) > 50000}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+register("convert_to_md", "文档转Markdown(PDF/Word/PPT/Excel/图片/音频/网页) — Convert to Markdown", tool_convert_to_md,
+         {"file_path": {"type": "string", "description": "文件路径或URL"},
+          "output_path": {"type": "string", "optional": True, "description": "输出 .md 文件路径"}})
 
 # ─── System & Desktop Management Tools (v3.2) ───
 
