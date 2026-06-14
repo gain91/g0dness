@@ -54,14 +54,62 @@ ROLES = {
 
 # ═══════ Task Decomposer ═══════
 
+DECOMPOSE_PROMPT = """你是一个任务分解专家。把用户任务分解为 1-4 个子步骤，分配给合适的角色专家。
+
+可用角色: researcher(信息搜索/分析), coder(编写脚本/代码), operator(桌面操作/文件管理), general(综合推理)
+
+规则:
+- 简单任务用 1 个角色，复杂任务可以 2-4 个
+- 需要搜索+写代码的任务：researcher 先搜，coder 后写
+- 有依赖关系的标 depends_on (数组，0开始索引)
+- 纯粹对话/问答用 general
+
+输出 JSON 数组，只输出 JSON：
+[{"role": "researcher", "task": "搜索GPU价格", "depends_on": []}]
+
+用户任务: {task}
+"""
+
 def decompose_task(task: str) -> List[Dict]:
-    """
-    简单任务分解 — 基于关键词匹配
-    复杂场景可用 LLM 分解
-    """
+    """LLM 驱动任务分解，降级到关键词匹配"""
+    # Try LLM decomposition first
+    try:
+        import urllib.request as _ur
+        body = json.dumps({
+            "model": "qwen3:8b",
+            "messages": [
+                {"role": "system", "content": "输出纯 JSON 数组。不要解释。"},
+                {"role": "user", "content": DECOMPOSE_PROMPT.format(task=task)}
+            ],
+            "stream": False,
+            "options": {"temperature": 0.3}
+        }).encode()
+        req = _ur.Request("http://localhost:11434/api/chat", body,
+                          headers={"Content-Type": "application/json"})
+        resp = json.loads(_ur.urlopen(req, timeout=30).read())
+        content = resp.get("message", {}).get("content", "")
+        # Extract JSON from response (may be wrapped in markdown)
+        import re
+        json_match = re.search(r'\[.*\]', content, re.DOTALL)
+        if json_match:
+            steps = json.loads(json_match.group())
+            if isinstance(steps, list) and len(steps) > 0:
+                # Validate and normalize
+                valid = []
+                for i, s in enumerate(steps):
+                    if isinstance(s, dict) and "role" in s and "task" in s:
+                        role = s["role"] if s["role"] in ROLES else "general"
+                        deps = s.get("depends_on", [])
+                        valid.append({"role": role, "task": s["task"],
+                                      "depends_on": deps if isinstance(deps, list) else []})
+                if valid:
+                    return valid
+    except Exception:
+        pass
+
+    # Fallback: keyword heuristic
     steps = []
 
-    # Heuristic: check for common task patterns
     task_lower = task.lower()
 
     if any(w in task_lower for w in ["搜索", "查一下", "查找", "研究", "调研", "信息", "资料", "最新", "search", "find", "research"]):

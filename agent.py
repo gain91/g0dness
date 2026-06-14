@@ -4,7 +4,7 @@ ReAct 循环：思考→工具调用→观察→重复
 支持 Ollama 本地 / DeepSeek V4 / OpenRouter 云端
 v4.0: RAG 记忆 + 插件系统 + MCP 客户端 + 邮件工具
 """
-import json
+import json, time
 import urllib.request as ur
 from typing import Generator, Dict, Any, List, Optional
 import tools
@@ -179,6 +179,40 @@ class Agent:
                         json.dumps(body).encode(),
                         headers={"Content-Type": "application/json"})
         return json.loads(ur.urlopen(req, timeout=180).read())
+
+    def _call_ollama_stream(self, use_tools=True):
+        """流式调用 Ollama，yield (token_text, final_message) — final_message 在最后"""
+        body = {
+            "model": self._ollama_model,
+            "messages": self.messages,
+            "stream": True,
+            "options": {"temperature": 0.7}
+        }
+        if use_tools:
+            body["tools"] = _tools_to_openai()
+        req = ur.Request("http://localhost:11434/api/chat",
+                        json.dumps(body).encode(),
+                        headers={"Content-Type": "application/json"})
+        resp = ur.urlopen(req, timeout=180)
+        accumulated = {"content": "", "tool_calls": []}
+        for line_bytes in resp:
+            line = line_bytes.decode("utf-8", errors="replace").strip()
+            if not line: continue
+            try:
+                chunk = json.loads(line)
+                msg = chunk.get("message", {})
+                token = msg.get("content", "")
+                if token:
+                    accumulated["content"] += token
+                    yield (token, None)
+                for tc in msg.get("tool_calls", []):
+                    accumulated["tool_calls"].append(tc)
+                if chunk.get("done"):
+                    yield (None, accumulated)
+                    return
+            except json.JSONDecodeError:
+                pass
+        yield (None, accumulated)
 
     def _call_deepseek(self) -> dict:
         """调用 DeepSeek V4 Anthropic Messages API"""
@@ -429,6 +463,13 @@ class Agent:
         sys_content = AGENT_SYSTEM_FALLBACK if is_fallback else AGENT_SYSTEM
         if system:
             sys_content = sys_content + "\n\n用户上下文: " + system
+        if HAS_RAG:
+            try:
+                rag_ctx = rag_mem.build_context(task, max_tokens=1500)
+                if rag_ctx:
+                    sys_content = sys_content + "\n\n" + rag_ctx
+            except:
+                pass
 
         self.messages = [
             {"role": "system", "content": sys_content},
@@ -543,8 +584,14 @@ class Agent:
                     resp = self._call_ollama_fallback()
                     text, tool_calls = self._parse_fallback(resp)
                 elif mt == "ollama":
-                    resp = self._call_ollama(use_tools=True)
-                    text, tool_calls = self._parse_ollama(resp)
+                    text = ""
+                    tool_calls = []
+                    for token, final in self._call_ollama_stream(use_tools=True):
+                        if token:
+                            text += token
+                            yield {"type": "token", "token": token, "turn": turn}
+                        if final:
+                            _, tool_calls = self._parse_ollama({"message": final})
                 elif mt == "deepseek":
                     resp = self._call_deepseek()
                     text, tool_calls = self._parse_deepseek(resp)
@@ -661,6 +708,67 @@ def register_routes(app):
 
         return StreamingResponse(generate(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    # ═══════ Background Agent Tasks ═══════
+    import threading, uuid as _uuid
+
+    _agent_tasks = {}  # task_id → {status, result, model, created_at}
+    _task_lock = threading.Lock()
+
+    @app.post("/api/agent/task")
+    async def api_agent_task(request: Request):
+        """后台异步运行 Agent，立即返回 task_id"""
+        try:
+            raw = await request.body()
+            data = json.loads(raw.decode("utf-8", errors="replace"))
+        except Exception:
+            data = {}
+        task_text = data.get("task", "").strip()
+        if not task_text:
+            return JSONResponse({"error": "empty task"}, 400)
+        model = data.get("model", "deepseek")
+        system = data.get("system", "")
+        task_id = str(_uuid.uuid4())[:8]
+
+        with _task_lock:
+            _agent_tasks[task_id] = {"status": "running", "result": None, "model": model,
+                                      "task": task_text[:100], "created_at": time.time()}
+
+        def _run_background():
+            try:
+                agent = Agent(model_key=model)
+                result = agent.run(task_text, system=system)
+                with _task_lock:
+                    _agent_tasks[task_id]["status"] = "done" if result.get("success") else "failed"
+                    _agent_tasks[task_id]["result"] = result.get("result", "")[:2000]
+                    _agent_tasks[task_id]["turns"] = result.get("turns", 0)
+            except Exception as e:
+                with _task_lock:
+                    _agent_tasks[task_id]["status"] = "error"
+                    _agent_tasks[task_id]["error"] = str(e)[:500]
+            # Notify user
+            try:
+                from notify import notify_windows
+                status = _agent_tasks[task_id]["status"]
+                notify_windows(f"Agent [{status.upper()}]", _agent_tasks[task_id].get("result", "")[:100])
+            except:
+                pass
+
+        threading.Thread(target=_run_background, daemon=True).start()
+        return {"ok": True, "task_id": task_id, "status": "running"}
+
+    @app.get("/api/agent/task/{task_id}")
+    async def api_agent_task_status(task_id: str):
+        with _task_lock:
+            task = _agent_tasks.get(task_id)
+        if not task:
+            return {"ok": False, "error": "task not found"}
+        return {"ok": True, **task}
+
+    @app.get("/api/agent/tasks")
+    async def api_agent_task_list():
+        with _task_lock:
+            return {"ok": True, "tasks": list(_agent_tasks.values())}
 
     @app.get("/api/tools/health")
     async def api_tools_health():
