@@ -6,7 +6,7 @@
 <title>g0dness - AI Suite</title>
 <style>
 /* ═══════════════════════════════════════════
-   AI Suite v4.1 — Design System
+   AI Suite v4.2 — Design System
    Inspired by: ChatGPT Desktop · Raycast · Linear
    ═══════════════════════════════════════════ */
 :root {
@@ -429,7 +429,7 @@ body {
               <option value="claude">Claude 云端</option>
               <option value="gemini">Gemini 云端</option>
             </select>
-            <textarea id="agentTask" placeholder="输入任务，Agent 会自动拆解执行..." rows="1" style="flex:1;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:14px;resize:none;min-height:44px;max-height:120px;font-family:inherit" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();agentSend()}"></textarea>
+            <textarea id="agentTask" placeholder="输入任务，Agent 会自动拆解执行..." rows="1" style="flex:1;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:14px;resize:none;min-height:44px;max-height:120px;font-family:inherit" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();agentSend()}" oninput="autoResize(this)"></textarea>
             <button style="background:var(--accent);color:#fff;border:none;padding:10px 16px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:bold;white-space:nowrap;height:44px" id="agentBtn" onclick="agentSend()">执行</button>
             <button style="background:#a855f7;color:#fff;border:none;padding:10px 12px;border-radius:8px;cursor:pointer;font-size:12px;white-space:nowrap;height:44px" id="agentBgBtn" onclick="agentBackground()">后台</button>
             <button style="background:#f59e0b;color:#fff;border:none;padding:10px 12px;border-radius:8px;cursor:pointer;font-size:12px;white-space:nowrap;height:44px" id="teamBtn" onclick="teamSend()" title="多 Agent 协作">团队</button>
@@ -452,7 +452,7 @@ body {
         <option value="or_gpt">GPT Image 2·创意</option>
         <option value="or_gemini">Gemini Image·综合</option>
       </select>
-      <textarea id="imgPrompt" placeholder="输入画面描述..." rows="1" style="flex:1;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:14px;resize:none;min-height:44px;max-height:150px;font-family:inherit" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();genImage()}"></textarea>
+      <textarea id="imgPrompt" placeholder="输入画面描述..." rows="1" style="flex:1;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:14px;resize:none;min-height:44px;max-height:150px;font-family:inherit" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();genImage()}" oninput="autoResize(this)"></textarea>
       <button style="background:var(--accent);color:#fff;border:none;padding:10px 16px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:bold;white-space:nowrap;height:44px" id="genBtn" onclick="genImage()">生成</button>
       <input type="file" id="imgFile" accept="image/*" style="display:none" onchange="uploadFile('image')">
       <button onclick="document.getElementById('imgFile').click()" style="background:var(--input-bg);color:var(--muted);border:1px solid var(--border);padding:6px 10px;border-radius:6px;cursor:pointer;font-size:14px;height:44px;flex-shrink:0" title="参考图">📎</button>
@@ -472,7 +472,7 @@ body {
         <option value="seedance">Seedance 2.0</option>
         <option value="wan_i2v">Wan 图生</option>
       </select>
-      <textarea id="vidPrompt" placeholder="输入画面描述..." rows="1" style="flex:1;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:14px;resize:none;min-height:44px;max-height:150px;font-family:inherit" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();genVideo()}"></textarea>
+      <textarea id="vidPrompt" placeholder="输入画面描述..." rows="1" style="flex:1;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:14px;resize:none;min-height:44px;max-height:150px;font-family:inherit" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();genVideo()}" oninput="autoResize(this)"></textarea>
       <button style="background:var(--accent);color:#fff;border:none;padding:10px 16px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:bold;white-space:nowrap;height:44px" id="vidBtn" onclick="genVideo()">生成</button>
       <input type="file" id="vidFile" accept="image/*" style="display:none" onchange="uploadFile('video')">
       <button onclick="document.getElementById('vidFile').click()" style="background:var(--input-bg);color:var(--muted);border:1px solid var(--border);padding:6px 10px;border-radius:6px;cursor:pointer;font-size:14px;height:44px;flex-shrink:0" title="首帧图">📎</button>
@@ -484,7 +484,7 @@ body {
 </div><!-- /layout -->
 
 <div class="input-area" id="chatInputArea">
-  <textarea id="input" placeholder="输入内容，按 Enter 发送，Shift+Enter 换行..." rows="1" onkeydown="handleKey(event)"></textarea>
+  <textarea id="input" placeholder="输入内容，按 Enter 发送，Shift+Enter 换行..." rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
   <select id="tplSelect" onchange="applyTemplate(this.value)" style="background:var(--input-bg);color:var(--text);border:1px solid var(--border);padding:4px 8px;border-radius:6px;font-size:12px;height:44px;flex-shrink:0">
     <option value="">📋 模板</option>
   </select>
@@ -514,7 +514,7 @@ let model = 'deepseek-r1:14b';
     {icon:'?', title:'三主题', desc:'? 按钮切换浅色/深色/OLED 主题，颜色偏好自动保存'},
   ];
   const html = '<div class="modal-box" style="max-width:560px"><button class="modal-close" onclick="this.closest(\'.modal-overlay\').remove();localStorage.setItem(\'aisuite_onboarded\',\'1\')">&times;</button>'
-    + '<h2>? 欢迎使用 g0dness AI Suite v4.1</h2>'
+    + '<h2>? 欢迎使用 g0dness AI Suite v4.2</h2>'
     + '<p style="color:var(--muted);font-size:13px;margin-bottom:16px">52 工具 ? 4 模式 ? 多模型 ? Agent 自主桌面助手</p>'
     + steps.map((s,i) => '<div style="display:flex;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)"><span style="font-size:28px;width:40px;text-align:center">'+s.icon+'</span><div><b style="font-size:14px">'+s.title+'</b><br><span style="font-size:12px;color:var(--muted)">'+s.desc+'</span></div></div>').join('')
     + '<button onclick="this.closest(\'.modal-overlay\').remove();localStorage.setItem(\'aisuite_onboarded\',\'1\')" style="width:100%;margin-top:16px;background:var(--accent);color:#fff;border:none;padding:12px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600">开始使用</button>'
@@ -1034,6 +1034,11 @@ function switchChatModel() {
 
 function escapeHTML(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function autoResize(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 160) + 'px';
 }
 
 function handleKey(e) {
