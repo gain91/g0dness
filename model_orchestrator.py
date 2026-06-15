@@ -134,8 +134,9 @@ class AIGateway:
                 provider = "ollama"
         except Exception as e:
             error = str(e)
-            # Fallback chain: Ollama → OpenRouter → DeepSeek
-            for fb in ["ollama", "deepseek"]:
+            # Fallback chain: local Ollama → DeepSeek → OpenRouter models
+            fallback_chain = ["ollama", "deepseek", "claude", "gpt", "gemini-fast"]
+            for fb in fallback_chain:
                 if fb == provider:
                     continue
                 try:
@@ -143,8 +144,12 @@ class AIGateway:
                         reply = chat_ollama(prompt, system=system)
                     elif fb == "deepseek":
                         reply = chat_deepseek(prompt, system=system)
+                    elif fb in OPENROUTER_MODELS:
+                        reply = chat_openrouter(prompt, system=system, submodel=fb)
+                    else:
+                        continue
                     provider = fb
-                    error = f"Fell back to {fb}: {e}"
+                    error = None  # 降级成功，清除错误
                     break
                 except Exception:
                     pass
@@ -176,8 +181,20 @@ class AIGateway:
 
 
 def estimateTokens(text: str) -> int:
-    """粗略 token 估算 — 中文 ~1.5 char/token, 英文 ~4 char/token"""
-    return max(1, len(text) // 3)
+    """Token 估算 — 中英文分别计算，优先 tiktoken"""
+    if not text:
+        return 0
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    except (ImportError, Exception):
+        pass
+    # 降级：中文 ~0.65 token/char, 英文 ~0.28 token/char
+    import re
+    cn_chars = len(re.findall(r'[一-鿿　-〿＀-￯]', text))
+    en_chars = len(text) - cn_chars
+    return max(1, int(cn_chars * 0.65 + en_chars / 3.5))
 
 # Global gateway instance
 gateway = AIGateway()
@@ -402,8 +419,13 @@ def generate_image_openrouter(prompt: str, provider: str = "openai") -> Optional
                                "Authorization": f"Bearer {api_key}",
                                "HTTP-Referer": "http://localhost:5001"})
     resp = json.loads(ur.urlopen(req, timeout=120).read())
-    # OpenRouter 返回的图片在 message content 中
-    msg = resp["choices"][0]["message"]
+    # OpenRouter 可能返回错误体，先检查
+    if "error" in resp:
+        raise Exception(resp["error"].get("message", str(resp["error"])))
+    try:
+        msg = resp["choices"][0]["message"]
+    except (KeyError, IndexError) as e:
+        raise Exception(f"Unexpected OpenRouter response: {json.dumps(resp, ensure_ascii=False)[:500]}") from e
     content = msg.get("content", "")
     if isinstance(content, list):
         for part in content:
@@ -543,12 +565,17 @@ def setup_keys():
         print("⚠️ 未设置任何 Key，仅本地 Ollama 可用")
 
 # ═══════ Web API (FastAPI) ═══════
-from fastapi import FastAPI, Request, Query
+from fastapi import FastAPI, Request, Query, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from auth_middleware import AuthMiddleware, AUTH_TOKEN as _AUTH_TOKEN
+from logger import get_logger
+_log = get_logger("model_orchestrator")
 import uvicorn
 
 app = FastAPI(title="AI Suite Orchestrator", docs_url=None, redoc_url=None)
+app.add_middleware(AuthMiddleware)
+_log.info("model_orchestrator starting on port 5001")
 
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
@@ -680,7 +707,8 @@ async def api_models():
 
 @app.get("/api/gateway/health")
 async def api_gateway_health():
-    return gateway.provider_health()
+    import asyncio
+    return await asyncio.to_thread(gateway.provider_health)
 
 @app.get("/api/gateway/stats")
 async def api_gateway_stats():
@@ -780,6 +808,85 @@ except Exception as e:
     HAS_SCHEDULER = False
     print(f"[warn] scheduler module not loaded: {e}")
 
+# ═══════ 对话导出/导入 ═══════
+@app.get("/api/conversations/{cid}/export")
+async def api_export_conv(cid: str, fmt: str = "json"):
+    """导出对话 — json 或 markdown"""
+    try:
+        from db import get_db
+        db = get_db()
+        msgs = db.execute("SELECT role, content, tokens, created_at FROM messages WHERE conv_id=? ORDER BY created_at", (cid,)).fetchall()
+        if not msgs:
+            return JSONResponse({"error": "not found"}, 404)
+        title = db.execute("SELECT title FROM conversations WHERE id=?", (cid,)).fetchone()
+        title = title[0] if title else "Untitled"
+
+        if fmt == "md":
+            md = f"# {title}\n\n"
+            for m in msgs:
+                role = "**You**" if m["role"] == "user" else "**AI**" if m["role"] == "assistant" else f"**{m['role']}**"
+                md += f"{role}:\n{m['content']}\n\n---\n\n"
+            return {"ok": True, "format": "markdown", "data": md, "filename": f"{title}.md"}
+        else:
+            return {"ok": True, "format": "json", "data": {
+                "title": title, "id": cid,
+                "messages": [{"role": m["role"], "content": m["content"], "tokens": m["tokens"]} for m in msgs]
+            }, "filename": f"{title}.json"}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, 500)
+
+@app.post("/api/conversations/import")
+async def api_import_conv(request: Request):
+    """导入 JSON 对话"""
+    try:
+        from db import get_db
+        import uuid, time
+        data = await request.json()
+        db = get_db()
+        cid = f"import_{uuid.uuid4().hex[:8]}"
+        db.execute("INSERT INTO conversations (id, title, model, created_at) VALUES (?, ?, ?, ?)",
+                   (cid, data.get("title", "Imported"), "ollama", int(time.time())))
+        for m in data.get("messages", []):
+            db.execute("INSERT INTO messages (conv_id, role, content, tokens, created_at) VALUES (?,?,?,?,?)",
+                       (cid, m.get("role","user"), m.get("content",""), m.get("tokens",0), int(time.time())))
+        db.commit()
+        return {"ok": True, "id": cid, "count": len(data.get("messages", []))}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, 500)
+
+# ═══════ 动态模型列表 ═══════
+_OR_MODELS_CACHE = {"data": [], "ts": 0}
+
+@app.get("/api/models/openrouter")
+async def api_openrouter_models():
+    """动态获取 OpenRouter 可用模型列表 (缓存 1 小时)"""
+    import time as _t
+    if _t.time() - _OR_MODELS_CACHE["ts"] < 3600 and _OR_MODELS_CACHE["data"]:
+        return {"ok": True, "models": _OR_MODELS_CACHE["data"], "cached": True}
+    try:
+        import urllib.request as _ur2
+        keys = load_keys()
+        api_key = keys.get("openrouter_key")
+        if not api_key:
+            return {"ok": False, "error": "OpenRouter key not set"}
+        req = _ur2.Request("https://openrouter.ai/api/v1/models",
+                          headers={"Authorization": f"Bearer {api_key}"})
+        resp = _ur2.urlopen(req, timeout=15)
+        data = json.loads(resp.read())
+        models = []
+        for m in data.get("data", []):
+            models.append({
+                "id": m.get("id"),
+                "name": m.get("name", m.get("id", "")),
+                "context_length": m.get("context_length", 0),
+                "pricing": m.get("pricing", {}),
+            })
+        _OR_MODELS_CACHE["data"] = sorted(models, key=lambda x: x.get("name", ""))
+        _OR_MODELS_CACHE["ts"] = _t.time()
+        return {"ok": True, "models": _OR_MODELS_CACHE["data"], "cached": False}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "models": _OR_MODELS_CACHE["data"] or []}
+
 # ═══════ 学习记忆 ═══════
 try:
     from memory_agent import register_memory_routes
@@ -788,6 +895,131 @@ try:
 except Exception as e:
     HAS_MEMORY = False
     print(f"[warn] memory module not loaded: {e}")
+
+# ═══════ Cost Tracking ═══════
+try:
+    from cost_tracker import get_stats as cost_stats, track as cost_track
+    HAS_COST = True
+except Exception:
+    HAS_COST = False
+    cost_stats = lambda: {}
+    cost_track = lambda *a, **kw: 0
+
+@app.get("/api/cost/stats")
+async def api_cost_stats():
+    return {"ok": True, "stats": cost_stats()}
+
+# ═══════ Templates ═══════
+try:
+    from templates_lib import load_templates, add_template, delete_template
+    HAS_TEMPLATES = True
+except Exception:
+    HAS_TEMPLATES = False
+    load_templates = lambda: []
+    add_template = lambda n, p, c="": {"error": "unavailable"}
+    delete_template = lambda tid: False
+
+@app.get("/api/templates")
+async def api_list_templates():
+    return {"ok": True, "templates": load_templates()}
+
+@app.post("/api/templates")
+async def api_add_template(request: Request):
+    data = await request.json()
+    tpl = add_template(data.get("name", ""), data.get("prompt", ""), data.get("category", "自定义"))
+    return {"ok": True, "template": tpl}
+
+@app.delete("/api/templates/{tid}")
+async def api_delete_template(tid: str):
+    ok = delete_template(tid)
+    return {"ok": ok}
+
+# ═══════ Tool Audit ═══════
+try:
+    from tool_audit import get_recent_calls
+    HAS_AUDIT = True
+except Exception:
+    HAS_AUDIT = False
+    get_recent_calls = lambda n=100: []
+
+@app.get("/api/audit/tools")
+async def api_tool_audit(limit: int = 100):
+    return {"ok": True, "calls": get_recent_calls(limit)}
+
+# ═══════ WebSocket Chat ═══════
+import asyncio
+import json as _json
+
+@app.websocket("/ws/chat")
+async def ws_chat(ws: WebSocket):
+    """WebSocket 双向聊天 — 支持 cancel + SSE 降级"""
+    await ws.accept()
+    cancel_event = asyncio.Event()
+
+    async def _recv_loop():
+        while True:
+            try:
+                msg = await ws.receive_text()
+                data = _json.loads(msg)
+                if data.get("action") == "cancel":
+                    cancel_event.set()
+            except Exception:
+                break
+
+    recv_task = asyncio.create_task(_recv_loop())
+
+    try:
+        while True:
+            data = await ws.receive_json()
+            if data.get("action") == "cancel":
+                cancel_event.set()
+                continue
+            if data.get("action") != "send":
+                continue
+
+            prompt = data.get("prompt", "").strip()
+            if not prompt:
+                await ws.send_json({"type": "error", "error": "empty prompt"})
+                continue
+
+            model = data.get("model", "ollama")
+            system = data.get("system", "")
+
+            try:
+                tokens_out = 0
+                if model == "ollama" or model == "deepseek-r1":
+                    for token in stream_ollama(prompt, system=system, model_name=model):
+                        if cancel_event.is_set():
+                            await ws.send_json({"type": "cancelled"})
+                            break
+                        await ws.send_json({"type": "token", "token": token})
+                        tokens_out += 1
+                elif model in OPENROUTER_MODELS:
+                    for token in stream_openrouter(prompt, system=system, submodel=model):
+                        if cancel_event.is_set():
+                            await ws.send_json({"type": "cancelled"})
+                            break
+                        await ws.send_json({"type": "token", "token": token})
+                        tokens_out += 1
+                else:
+                    # 同步模型 — 单次返回
+                    reply = chat(prompt, force_model=model, submodel=model)
+                    await ws.send_json({"type": "token", "token": reply["reply"]})
+
+                if HAS_COST and tokens_out:
+                    cost_track("openrouter" if model in OPENROUTER_MODELS else model,
+                               model, len(prompt) // 3, tokens_out)
+                await ws.send_json({"type": "done", "tokens": tokens_out})
+            except Exception as e:
+                await ws.send_json({"type": "error", "error": str(e)})
+    except Exception:
+        pass
+    finally:
+        recv_task.cancel()
+        try:
+            await ws.close()
+        except Exception:
+            pass
 
 # ═══════ 文件监工 ═══════
 try:
@@ -817,5 +1049,15 @@ if __name__ == "__main__":
     print(f"  Agent: {'loaded' if HAS_AGENT else 'not loaded'}")
     print(f"  Notify: {'loaded' if HAS_NOTIFY else 'not loaded'}")
     print(f"  Web: http://localhost:5001")
+    print(f"  Cost Tracker: {'loaded' if HAS_COST else 'not loaded'}")
+    print(f"  Templates: {'loaded' if HAS_TEMPLATES else 'not loaded'}")
+    print(f"  Audit: {'loaded' if HAS_AUDIT else 'not loaded'}")
     print("=" * 50)
+    # 启动健康监控
+    try:
+        from health_monitor import start_health_monitor
+        start_health_monitor()
+        print("  Health Monitor: started")
+    except Exception as e:
+        print(f"  Health Monitor: {e}")
     uvicorn.run(app, host="0.0.0.0", port=5001, log_level="warning")

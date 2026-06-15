@@ -5,9 +5,12 @@ Flask 文生图 Web 前端 — 自然语言输入 → 自动生图
 """
 import json, os, sys, time, shutil, subprocess, threading, uuid
 import urllib.request, urllib.error
-from fastapi import FastAPI, Request, UploadFile, File
+from fastapi import FastAPI, Request, UploadFile, File, WebSocket
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from auth_middleware import AuthMiddleware, AUTH_TOKEN as _AUTH_TOKEN
+from logger import get_logger
+_log = get_logger("gen_web")
 
 # PyInstaller frozen 环境下 sys.executable 是 EXE 自身，不能用来 spawn 子进程
 def _get_real_python():
@@ -26,6 +29,8 @@ def _get_real_python():
     return sys.executable
 
 app = FastAPI(title="AI Suite Gen Web", docs_url=None, redoc_url=None)
+app.add_middleware(AuthMiddleware)
+_log.info("gen_web starting on port 5000")
 
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
@@ -122,10 +127,15 @@ def submit_workflow(positive, negative, seed):
                                    headers={"Content-Type": "application/json"})
     return json.loads(urllib.request.urlopen(resp).read())["prompt_id"]
 
-def poll_result(prompt_id):
-    """轮询直到生图完成，返回图片路径"""
-    while True:
+def poll_result(prompt_id, max_retries=150, timeout_sec=300):
+    """轮询直到生图完成，返回图片路径。最多150次(5分钟)，超时退出"""
+    import time as _t
+    start = _t.time()
+    retries = 0
+    while retries < max_retries:
         try:
+            if _t.time() - start > timeout_sec:
+                return None  # 超时
             history = json.loads(
                 urllib.request.urlopen(f"{COMFYUI_URL}/history/{prompt_id}", timeout=10).read())
             if prompt_id in history:
@@ -137,8 +147,11 @@ def poll_result(prompt_id):
                     shutil.copy2(src, dst)
                     return f"/output/{img['filename']}"
             time.sleep(2)
-        except:
+            retries += 1
+        except Exception:
             time.sleep(2)
+            retries += 1
+    return None  # 超过最大重试次数
 
 
 def generate_worker(user_input: str):
@@ -177,13 +190,17 @@ video_state = {"status": "idle", "message": "", "frames": [], "image": None}
 @app.post("/api/generate")
 async def api_generate(request: Request):
     global state
-    if state["status"] in ("enhancing", "switching", "generating"):
+    old_status = state.get("status", "idle")
+    if old_status in ("enhancing", "switching", "generating"):
         return JSONResponse({"error": "正在生成中，请等待..."}, 400)
     data = await request.json()
     user_input = data.get("prompt", "").strip()
     if not user_input:
         return JSONResponse({"error": "请输入描述"}, 400)
-    state = {"status": "starting", "message": "", "image": None, "positive": "", "negative": "", "seed": None, "prompt_id": None}
+    # 使用 clear+update 避免线程间引用丢失
+    state.clear()
+    state.update({"status": "starting", "message": "", "image": None,
+                  "positive": "", "negative": "", "seed": None, "prompt_id": None})
     threading.Thread(target=generate_worker, args=(user_input,), daemon=True).start()
     return {"ok": True}
 
@@ -198,13 +215,16 @@ VOLC_VIDEO_MODELS = {
 }
 
 VOLC_IMAGE_MODELS = {
+    # 优先使用 .model_keys.json 中的 volcengine_endpoint_id (ep-xxx)
     "seedream5": "doubao-seedream-5-0-260128",
-    "seedream4": "doubao-seedream-4-5-251128",
-    "seedream3": "doubao-seedream-4-0-250828",
 }
 
 def volc_image_gen(prompt, model_key="seedream5"):
-    """Seedream 图像生成"""
+    """Seedream 图像生成
+
+    优先使用 .model_keys.json 中的 volcengine_endpoint_id (ep-xxx 格式)，
+    因为火山方舟现在要求推理接入点 ID，直接传模型名返回 404。
+    """
     import urllib.request as ur
     keys_path = "C:/Users/86538/.model_keys.json"
     with open(keys_path) as f:
@@ -212,7 +232,10 @@ def volc_image_gen(prompt, model_key="seedream5"):
     api_key = keys.get("volcengine_key", "")
     if not api_key:
         return None, "Volcengine key not set"
-    model = VOLC_IMAGE_MODELS.get(model_key, VOLC_IMAGE_MODELS["seedream5"])
+
+    # 优先用 endpoint_id，fallback 到模型名称
+    model = keys.get("volcengine_endpoint_id") or VOLC_IMAGE_MODELS.get(model_key, VOLC_IMAGE_MODELS["seedream5"])
+
     body = json.dumps({
         "model": model,
         "prompt": prompt,
@@ -230,6 +253,12 @@ def volc_image_gen(prompt, model_key="seedream5"):
         fname = f"seedream_{int(time.time())}.png"
         local_path = os.path.join(OUTPUT_DIR, fname)
         ur.urlretrieve(img_url, local_path)
+        # 费用追踪
+        try:
+            from cost_tracker import track_image
+            track_image(model, 1)
+        except Exception:
+            pass
         return f"/output/{fname}", None
     return None, "No image in response"
 
@@ -243,7 +272,8 @@ def volc_video_create(prompt, model_key="seedance", image_url=None):
     if not api_key:
         return None, "Volcengine key not set"
 
-    model = VOLC_VIDEO_MODELS.get(model_key, VOLC_VIDEO_MODELS["seedance"])
+    # 优先用 endpoint_id，fallback 到模型名称（同生图 404 问题）
+    model = keys.get("volcengine_endpoint_id") or VOLC_VIDEO_MODELS.get(model_key, VOLC_VIDEO_MODELS["seedance"])
     content = [{"type": "text", "text": prompt}]
     if image_url:
         content.append({"type": "image_url", "image_url": {"url": image_url}})
@@ -686,8 +716,14 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 @app.post("/api/upload")
 async def api_upload(file: UploadFile = File(...)):
-    safe_name = f"{int(time.time())}_{file.filename}"
+    # 🔴 fix: path traversal — use basename only, reject None filename
+    if not file.filename:
+        return JSONResponse({"error": "filename required"}, 400)
+    safe_name = f"{int(time.time())}_{os.path.basename(file.filename)}"
     path = os.path.join(UPLOAD_DIR, safe_name)
+    # Extra safeguard: ensure resolved path stays within UPLOAD_DIR
+    if not os.path.abspath(path).startswith(os.path.abspath(UPLOAD_DIR)):
+        return JSONResponse({"error": "invalid filename"}, 400)
     content = await file.read()
     with open(path, "wb") as f: f.write(content)
     result = {"ok": True, "url": f"/output/uploads/{safe_name}", "name": safe_name, "type": "file"}
@@ -869,5 +905,12 @@ if __name__ == "__main__":
     print("  AI Auto Image Gen Web Frontend")
     print("  Open: http://localhost:5000")
     print("="*50)
+    # 启动健康监控
+    try:
+        from health_monitor import start_health_monitor
+        start_health_monitor()
+        print("  Health Monitor: started")
+    except Exception as e:
+        print(f"  Health Monitor: {e}")
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=5000, log_level="warning")

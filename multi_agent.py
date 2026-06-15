@@ -196,7 +196,9 @@ class AgentTeam:
                 self.events.append({"type": "step_error", "agent": step["role"], "error": str(e)})
 
         # Build final result
-        final = results.get(f"step_{len(results)-1}", {}).get("result", {}) if results else {}
+        # 取最后一个成功步骤的结果，而非依赖长度索引
+        final_keys = sorted([k for k in results if results.get(k)], key=lambda k: int(k.split("_")[1]))
+        final = results.get(final_keys[-1], {}).get("result", {}) if final_keys else {}
         if not final or not final.get("success"):
             final = {"success": True, "text": self._build_summary(results), "steps": len(steps)}
 
@@ -240,8 +242,12 @@ class AgentTeam:
 
         # Phase 2: Dependent
         for step in dependent_steps:
-            context = json.dumps({k: v.get("result", {}).get("text", "")[:200]
-                                 for k, v in results.items()}, ensure_ascii=False)
+            # 过滤失败步骤，扩容上下文至 1500 字符
+            context = json.dumps({
+                k: v.get("result", {}).get("text", "")[:1500]
+                for k, v in results.items()
+                if v and not v.get("result", {}).get("error")
+            }, ensure_ascii=False)
             full_task = f"{step['task']}\n\n前期结果:\n{context}"
             try:
                 agent_events, agent_result = self._run_agent_stream(step["role"], full_task, "synthesizer")
@@ -255,7 +261,9 @@ class AgentTeam:
             except Exception as e:
                 yield {"type": "step_error", "agent": step["role"], "agent_id": "synthesizer", "error": str(e)}
 
-        final = results.get(f"step_{len(results)-1}", {}).get("result", {}) if results else {}
+        # 取最后一个成功步骤的结果，而非依赖长度索引
+        final_keys = sorted([k for k in results if results.get(k)], key=lambda k: int(k.split("_")[1]))
+        final = results.get(final_keys[-1], {}).get("result", {}) if final_keys else {}
         if not final or not final.get("success"):
             final = {"success": True, "text": self._build_summary(results), "steps": len(steps)}
         yield {"type": "done", "steps": len(steps), "result": final}

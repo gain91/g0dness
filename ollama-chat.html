@@ -357,6 +357,7 @@ body {
     <option value="huihui_ai/qwen3-abliterated:8b">Qwen3 无审查</option>
   </select>
   <span class="model-badge" id="status">就绪</span>
+  <span id="costBadge" style="font-size:11px;opacity:0.7;cursor:pointer" onclick="loadCostStats()" title="费用统计">💰 $0.00</span>
   <select class="persona-select none" id="personaSelect" onchange="switchPersona()" title="角色预设" style="max-width:100px">
     <option value="">无角色</option>
   </select>
@@ -384,6 +385,7 @@ body {
       <button class="btn-new" onclick="newConversation()">+ 新会话</button>
       <button class="btn-new" style="background:#a855f7;flex:0;padding:6px 8px;font-size:16px" onclick="exportConversation()" title="导出对话">📥</button>
     </div>
+    <input id="convSearch" placeholder="搜索对话..." style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);font-size:12px;margin:0 0 8px 0;box-sizing:border-box" oninput="filterConvs(this.value)">
     <div class="sidebar-list" id="convList"></div>
   </div>
 
@@ -446,9 +448,7 @@ body {
     <div style="padding:10px 20px;background:var(--header-bg);border-top:1px solid var(--border);display:flex;gap:6px;align-items:flex-end;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)">
       <select id="imgModel" style="background:var(--input-bg);color:var(--text);border:1px solid var(--border);padding:6px 8px;border-radius:6px;font-size:12px;width:130px;height:44px">
         <option value="sdxl">SDXL 本地·免费</option>
-        <option value="seedream5">Seedream 5.0·最新</option>
-        <option value="seedream4">Seedream 4.5·优化词</option>
-        <option value="seedream3">Seedream 4.0·2K高清</option>
+        <option value="seedream5">Seedream 5.0</option>
         <option value="or_gpt">GPT Image 2·创意</option>
         <option value="or_gemini">Gemini Image·综合</option>
       </select>
@@ -485,6 +485,9 @@ body {
 
 <div class="input-area" id="chatInputArea">
   <textarea id="input" placeholder="输入内容，按 Enter 发送，Shift+Enter 换行..." rows="1" onkeydown="handleKey(event)"></textarea>
+  <select id="tplSelect" onchange="applyTemplate(this.value)" style="background:var(--input-bg);color:var(--text);border:1px solid var(--border);padding:4px 8px;border-radius:6px;font-size:12px;height:44px;flex-shrink:0">
+    <option value="">📋 模板</option>
+  </select>
   <input type="file" id="chatFile" accept="image/*,video/*,.pdf,.doc,.docx,.txt" style="display:none" onchange="uploadFile('chat')">
   <button onclick="showQuickTools()" title="快捷工具" style="background:var(--input-bg);color:var(--muted);border:1px solid var(--border);padding:8px 10px;border-radius:6px;cursor:pointer;font-size:14px;height:44px;width:44px;flex-shrink:0">🔧</button>
   <button onclick="document.getElementById('chatFile').click()" style="background:var(--input-bg);color:var(--muted);border:1px solid var(--border);padding:8px 10px;border-radius:6px;cursor:pointer;font-size:14px;height:44px;width:44px;flex-shrink:0" title="添加文件">📎</button>
@@ -551,6 +554,7 @@ initTemplates();
 let chatModel = 'ollama';
 let currentMode = 'chat';
 let genPolling = null;
+let abortController = null;
 
 // ═══════ Token 用量追踪 ═══════
 const MODEL_LIMITS = {
@@ -1070,7 +1074,9 @@ async function send() {
   if (!text) return;
 
   input.value = ''; input.style.height = 'auto';
-  btn.disabled = true;
+  abortController = new AbortController();
+  btn.textContent = '⏹ 停止';
+  btn.onclick = function(){ abortController.abort(); };
 
   addMsg('user', text);
   const chat = document.getElementById('chatView');
@@ -1088,7 +1094,8 @@ async function send() {
     const forceModel = chatModel === 'ollama' ? ('ollama:' + model) : orSub;
     const resp = await fetch(ORCH_API + '/api/chat/stream', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({prompt: text, model: forceModel, system: currentSystemPrompt})
+      body: JSON.stringify({prompt: text, model: forceModel, system: currentSystemPrompt}),
+      signal: abortController.signal
     });
 
     const reader = resp.body.getReader();
@@ -1135,12 +1142,18 @@ async function send() {
       saveMsg('assistant', fullReply, estimateTokens(fullReply));
     }
   } catch(e) {
-    msgDiv.innerHTML = '<div class="role">错误</div>无法连接服务。请确认:<br>1. Ollama 在运行 (11434)<br>2. 编排器在运行 (5001)<br>3. 访问地址是 http://localhost:5000/chat<br><br>错误: '+e.message;
-    document.getElementById('status').textContent = '离线';
+    if (e.name === 'AbortError') {
+      msgDiv.innerHTML = '<div class="role">停止</div>已取消生成。';
+    } else {
+      msgDiv.innerHTML = '<div class="role">错误</div>无法连接服务。请确认:<br>1. Ollama 在运行 (11434)<br>2. 编排器在运行 (5001)<br>3. 访问地址是 http://localhost:5000/chat<br><br>错误: '+e.message;
+      document.getElementById('status').textContent = '离线';
+    }
   }
 
   chat.scrollTop = chat.scrollHeight;
-  btn.disabled = false;
+  btn.textContent = '发送';
+  btn.onclick = send;
+  abortController = null;
   input.focus();
 }
 
@@ -1232,7 +1245,9 @@ function pollGenResult() {
       } else if (s.status === 'switching') {
         html = '<div class="progress"><div class="spinner"></div><p>🔄 切换到 ComfyUI...</p></div>';
       } else if (s.status === 'generating') {
-        html = '<div class="progress"><div class="spinner"></div><p>🎨 SDXL 生成中...</p></div>';
+        html = '<div class="progress"><div class="spinner"></div><p>🎨 SDXL 生成中... ' + (s.progress ? Math.round(s.progress) + '%' : '') + '</p>';
+        if (s.progress !== undefined) html += '<progress value="' + s.progress + '" max="100" style="width:100%;height:8px;border-radius:4px;margin-top:8px"></progress>';
+        html += '</div>';
         if (s.positive) html += '<div class="card"><p style="color:#a78bfa;font-size:13px">正向: '+s.positive+'</p></div>';
         if (s.negative) html += '<div class="card"><p style="color:#666;font-size:13px">负向: '+s.negative+'</p></div>';
       } else if (s.status === 'done') {
@@ -1305,7 +1320,9 @@ function pollVidResult() {
       if (s.status === 'creating') {
         html='<div class="progress"><div class="spinner"></div><p>📝 创建视频任务...</p></div>';
       } else if (s.status === 'generating') {
-        html='<div class="progress"><div class="spinner"></div><p>🎬 云端生成中... (约1-3分钟)</p></div>';
+        html='<div class="progress"><div class="spinner"></div><p>🎬 云端生成中... (约1-3分钟) ' + (s.progress ? Math.round(s.progress) + '%' : '') + '</p>';
+        if (s.progress !== undefined) html += '<progress value="' + s.progress + '" max="100" style="width:100%;height:8px;border-radius:4px;margin-top:8px"></progress>';
+        html += '</div>';
       } else if (s.status === 'done') {
         clearInterval(vidPoll);
         document.getElementById('vidBtn').disabled = false;
@@ -1455,7 +1472,7 @@ async function loadConvList() {
   } catch(e) {}
 }
 
-async function newConversation() {
+async function newConversation(keepView = false) {
   try {
     const r = await fetch(ORCH_API + '/api/conversations', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1463,10 +1480,13 @@ async function newConversation() {
     });
     const d = await r.json();
     activeConvId = d.id;
-    document.getElementById('chatView').innerHTML = '';
-    clearTokenState();
+    // keepView=true 时不清空界面（由 saveMsg 自动触发时保留已添加的消息）
+    if (!keepView) {
+      document.getElementById('chatView').innerHTML = '';
+      clearTokenState();
+    }
     loadConvList();
-    addMsg('system', '新会话已创建');
+    if (!keepView) addMsg('system', '新会话已创建');
   } catch(e) { addMsg('system', '创建失败: '+e.message); }
 }
 
@@ -1475,6 +1495,7 @@ async function switchConv(cid) {
     const r = await fetch(ORCH_API + '/api/conversations/' + cid + '/messages');
     const d = await r.json();
     activeConvId = cid;
+    localStorage.setItem('ai-suite-last-conv', cid);
     const chat = document.getElementById('chatView');
     chat.innerHTML = '';
     clearTokenState();
@@ -1485,7 +1506,8 @@ async function switchConv(cid) {
         div.textContent = m.content;
         div.style.cssText = 'align-self:center;font-size:12px;opacity:0.5;padding:4px 8px;';
       } else {
-        div.innerHTML = '<div class="role">' + (m.role==='user'?'你':'g0dness') + '</div>' + m.content;
+        // 🔴 fix: XSS — escape server content before innerHTML
+        div.innerHTML = '<div class="role">' + (m.role==='user'?'你':'g0dness') + '</div>' + escapeHTML(m.content);
       }
       chat.appendChild(div);
       // 只计数，不存 DB（避免重复写入）
@@ -1507,7 +1529,7 @@ async function deleteConv(cid) {
 }
 
 async function saveMsg(role, content, tokens) {
-  if (!activeConvId) await newConversation();
+  if (!activeConvId) await newConversation(true);
   if (!activeConvId) return;
   try {
     await fetch(ORCH_API + '/api/conversations/' + activeConvId + '/messages', {
@@ -1526,14 +1548,27 @@ addMsg = function(role, content) {
 };
 
 // ═══════ Theme ═══════
-const themes = ['', 'theme-dark', 'theme-light'];
-let themeIdx = parseInt(localStorage.getItem('ai-suite-theme')||'0');
-document.body.className = themes[themeIdx];
+const themes = ['', 'theme-dark', 'theme-light', 'auto'];
+let themeIdx = parseInt(localStorage.getItem('ai-suite-theme')||'3');
+if (localStorage.getItem('ai-suite-theme') === null) themeIdx = 3;
+document.body.className = themes[themeIdx] === 'auto' ? '' : themes[themeIdx];
 function cycleTheme() {
   themeIdx = (themeIdx + 1) % themes.length;
-  document.body.className = themes[themeIdx];
-  localStorage.setItem('ai-suite-theme', themeIdx);
+  document.body.className = themes[themeIdx] === 'auto' ? '' : themes[themeIdx];
+  if (themes[themeIdx] === 'auto') {
+    localStorage.removeItem('ai-suite-theme');
+    applyOSTheme();
+  } else {
+    localStorage.setItem('ai-suite-theme', themeIdx);
+  }
 }
+const mq = window.matchMedia('(prefers-color-scheme: dark)');
+function applyOSTheme() {
+    if (localStorage.getItem('ai-suite-theme') !== null) return;
+    document.body.className = mq.matches ? 'theme-dark' : 'theme-light';
+}
+mq.addEventListener('change', applyOSTheme);
+applyOSTheme();
 
 // ═══════ Keyboard Shortcuts ═══════
 document.addEventListener('keydown', function(e) {
@@ -1635,34 +1670,45 @@ function showCommandPalette() {
 // ═══════ Markdown 渲染 ═══════
 function renderMD(text) {
   if (!text) return '';
-  let t = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  // code blocks ``` — placeholder to protect from <br>
-  let blocks = [];
-  t = t.replace(/```(\w*)\n([\s\S]*?)```/g, function(_, lang, code) {
-    blocks.push('<pre><code>' + code.trim() + '</code></pre>');
-    return '%%BLOCK_' + (blocks.length-1) + '%%';
-  });
-  // inline code `
-  t = t.replace(/`([^`]+)`/g, '<code>$1</code>');
-  // bold **
-  t = t.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
-  // italic *
-  t = t.replace(/\*(.+?)\*/g, '<i>$1</i>');
-  // headers
-  t = t.replace(/^### (.+)$/gm, '<h4>$1</h4>');
-  t = t.replace(/^## (.+)$/gm, '<h3>$1</h3>');
-  t = t.replace(/^# (.+)$/gm, '<h2>$1</h2>');
-  // unordered list
-  t = t.replace(/^- (.+)$/gm, '<li>$1</li>');
-  // blockquote
-  t = t.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
-  // links
-  t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
-  // newlines (after blocks protected)
-  t = t.replace(/\n/g, '<br>');
-  // restore code blocks
-  t = t.replace(/%%BLOCK_(\d+)%%/g, function(_, i) { return blocks[parseInt(i)]; });
-  return t;
+  // Escape HTML first, then apply markdown
+  let out = text
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    // Bold/Italic
+    .replace(/\*\*\*(.+?)\*\*\*/g, '<b><i>$1</i></b>')
+    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+    .replace(/\*(.+?)\*/g, '<i>$1</i>')
+    // Strikethrough
+    .replace(/~~(.+?)~~/g, '<del>$1</del>')
+    // Inline code
+    .replace(/`{3}(\w*)\n([\s\S]*?)`{3}/g, '<pre><code class="language-$1">$2</code></pre>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    // Tables
+    .replace(/\|(.+)\|\n\|[-| :]+\|\n((?:\|.+\|\n?)*)/g, function(m, header, rows) {
+      let hcols = header.split('|').filter(c=>c.trim()).map(c=>'<th>'+c.trim()+'</th>').join('');
+      let rrows = rows.trim().split('\n').map(r=>'<tr>'+r.split('|').filter(c=>c.trim()).map(c=>'<td>'+c.trim()+'</td>').join('')+'</tr>').join('');
+      return '<table><thead><tr>'+hcols+'</tr></thead><tbody>'+rrows+'</tbody></table>';
+    })
+    // Task lists
+    .replace(/^- \[([ x])\] (.+)$/gm, (m, check, text) => '<div class="task-item"><input type="checkbox" '+(check==='x'?'checked':'')+' disabled> <span>'+text+'</span></div>')
+    // Headers
+    .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    // Horizontal rules
+    .replace(/^---$/gm, '<hr>')
+    // Blockquotes
+    .replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>')
+    // Numbered lists
+    .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
+    // Unordered lists
+    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    // Wrap consecutive <li>
+    .replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>')
+    // Line breaks
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/\n/g, '<br>');
+  return '<p>'+out+'</p>';
 }
 
 // ═══════ 导出对话 ═══════
@@ -1792,7 +1838,20 @@ const __mdAddMsg = addMsg;
 addMsg = function(role, content) {
   let div = __mdAddMsg(role, content);
   if (role === 'assistant' && content) {
-    div.innerHTML = '<div class="role">g0dness</div>' + renderMD(content) + ' <button class="copy-btn" onclick="var t=this.parentElement.textContent;navigator.clipboard.writeText(t.replace(/^g0dness/,\'\').trim())">📋</button>';
+    // Hide previous regenerate button
+    let prevRegen = document.querySelector('#chatView .regenerate-btn');
+    if (prevRegen) prevRegen.classList.add('hidden');
+    div.innerHTML = '<div class="role">g0dness</div>' + renderMD(content)
+      + ' <button class="copy-btn" onclick="var t=this.parentElement.textContent;navigator.clipboard.writeText(t.replace(/^g0dness/,\'\').trim())">📋</button>'
+      + ' <button class="copy-btn regenerate-btn" onclick="regenerate()" style="right:32px" title="重新生成">🔄</button>';
+  } else if (role === 'user') {
+    let editBtn = document.createElement('button');
+    editBtn.className = 'copy-btn';
+    editBtn.textContent = '✏️';
+    editBtn.style.right = '30px';
+    editBtn.title = '编辑';
+    editBtn.onclick = function() { editMessage(content); };
+    div.appendChild(editBtn);
   }
   return div;
 };
@@ -2328,6 +2387,95 @@ listModels();
 switchChatModel();
 updateTokenBar();
 loadConvList();
+// Auto-resume last conversation
+const lastConv = localStorage.getItem('ai-suite-last-conv');
+if (lastConv && !activeConvId) { switchConv(lastConv).catch(()=>{}); }
+
+// ═══════ Drag-and-Drop Upload ═══════
+const chatViewEl = document.getElementById('chatView');
+chatViewEl.addEventListener('dragover', e => { e.preventDefault(); e.stopPropagation(); chatViewEl.style.outline = '2px dashed var(--accent)'; });
+chatViewEl.addEventListener('dragleave', () => { chatViewEl.style.outline = ''; });
+chatViewEl.addEventListener('drop', async e => {
+    e.preventDefault();
+    chatViewEl.style.outline = '';
+    for (let file of e.dataTransfer.files) {
+        addMsg('system', '📎 上传中: ' + file.name);
+        const form = new FormData(); form.append('file', file);
+        try {
+            const r = await fetch(GEN_API + '/api/upload', {method:'POST', body:form});
+            const d = await r.json();
+            if (d.ok) addMsg('system', '✅ ' + d.url);
+        } catch(ex) { addMsg('system', '❌ 上传失败'); }
+    }
+});
+
+// ═══════ Edit / Regenerate Messages ═══════
+function editMessage(content) { document.getElementById('input').value = content || ''; document.getElementById('input').focus(); }
+function regenerate() { const lastUser = messageLog.filter(m=>m.role==='user').pop(); if(lastUser) { document.getElementById('input').value = lastUser.content; send(); } }
+
+// ═══════ Conversation Search ═══════
+function filterConvs(q) {
+    const items = document.querySelectorAll('#convList .sidebar-item');
+    const ql = q.toLowerCase();
+    items.forEach(el => { el.style.display = ql && !el.textContent.toLowerCase().includes(ql) ? 'none' : ''; });
+}
+
+// ═══════ Cost Stats ═══════
+async function loadCostStats() {
+    const badge = document.getElementById('costBadge');
+    try {
+        const r = await fetch(ORCH_API + '/api/cost/stats');
+        const d = await r.json();
+        if (d.ok) {
+            badge.textContent = '💰 $' + (d.total_cost || 0).toFixed(2);
+            let html = '<div class="modal-box" style="max-width:420px"><button class="modal-close" onclick="this.closest(\'.modal-overlay\').remove()">&times;</button>';
+            html += '<h2>💰 费用统计</h2>';
+            html += '<p>总费用: <b>$' + (d.total_cost||0).toFixed(2) + '</b></p>';
+            html += '<p>总 Token: <b>' + Math.round((d.total_tokens||0)/1000) + 'k</b></p>';
+            html += '<p>请求次数: <b>' + (d.total_requests||0) + '</b></p>';
+            if (d.by_model) {
+                html += '<hr><p style="font-size:12px;color:var(--muted)">按模型:</p>';
+                for (let [m, c] of Object.entries(d.by_model)) {
+                    html += '<div class="model-row"><span><b>' + m + '</b></span><span>$' + (c||0).toFixed(4) + '</span></div>';
+                }
+            }
+            html += '</div>';
+            const ov = document.createElement('div');
+            ov.className = 'modal-overlay';
+            ov.onclick = function(e) { if (e.target===ov) ov.remove(); };
+            ov.innerHTML = html;
+            document.body.appendChild(ov);
+        }
+    } catch(e) { badge.textContent = '💰 $--'; }
+}
+
+// ═══════ Template Selector ═══════
+async function loadTemplates() {
+    try {
+        const r = await fetch(GEN_API + '/api/templates');
+        const d = await r.json();
+        const sel = document.getElementById('tplSelect');
+        if (!sel) return;
+        sel.innerHTML = '<option value="">📋 模板</option>';
+        if (d.templates) {
+            d.templates.forEach(t => {
+                sel.innerHTML += '<option value="' + t.id + '">' + (t.name || t.id) + '</option>';
+            });
+        }
+    } catch(e) {}
+}
+function applyTemplate(tid) {
+    if (!tid) return;
+    const sel = document.getElementById('tplSelect');
+    const opt = sel.options[sel.selectedIndex];
+    if (opt && opt.textContent) {
+        document.getElementById('input').value = opt.textContent.replace(/^📋\s*模板\s*/,'');
+    }
+    sel.value = '';
+}
+
+// Load templates on startup
+loadTemplates();
 </script>
 </body>
 </html>

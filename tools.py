@@ -95,8 +95,12 @@ def tool_list_dir(path):
         return {"ok": False, "error": str(e)}
 
 def tool_write_file(path, content):
+    # 🔴 fix: sandbox check (was missing, could write to system paths)
+    check = _sandbox_path(path)
+    if not check["ok"]:
+        return check
     try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         return {"ok": True, "path": path}
@@ -280,17 +284,21 @@ def tool_screenshot(path=None):
         pass  # 走 PowerShell 降级
     # Fallback: PowerShell screenshot
     try:
+        import base64 as _b64
         save_path = path or os.path.expanduser("~/Desktop/screenshot.png")
+        # 🔴 fix: use base64 to avoid PowerShell injection via path
+        encoded_path = _b64.b64encode(save_path.encode("utf-8")).decode("ascii")
         ps = f'''
         Add-Type -AssemblyName System.Windows.Forms,System.Drawing
         $screen = [System.Windows.Forms.Screen]::PrimaryScreen
         $bmp = New-Object System.Drawing.Bitmap($screen.Bounds.Width, $screen.Bounds.Height)
         $g = [System.Drawing.Graphics]::FromImage($bmp)
         $g.CopyFromScreen(0, 0, 0, 0, $bmp.Size)
-        $bmp.Save("{save_path.replace(chr(92), chr(92)+chr(92))}")
+        $path = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("{encoded_path}"))
+        $bmp.Save($path)
         $g.Dispose()
         '''
-        subprocess.run(["powershell", "-Command", ps], timeout=30,
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps], timeout=30,
                       capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
         return {"ok": True, "path": save_path, "method": "powershell"}
     except Exception as e2:
@@ -417,10 +425,13 @@ def tool_ocr(image_path=None):
         # 2) Windows built-in OCR
         if not text:
             try:
-                safe_path = target.replace('\\', '\\\\')
+                import base64 as _b64
+                # 🔴 fix: base64-encode path to avoid PowerShell injection
+                encoded_target = _b64.b64encode(target.encode("utf-8")).decode("ascii")
                 ps = f'''
                 Add-Type -AssemblyName System.Drawing | Out-Null
-                $bmp = [System.Drawing.Bitmap]::FromFile("{safe_path}")
+                $path = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("{encoded_target}"))
+                $bmp = [System.Drawing.Bitmap]::FromFile($path)
                 $w = $bmp.Width; $h = $bmp.Height
                 $data = $bmp.LockBits([System.Drawing.Rectangle]::new(0,0,$w,$h), [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
                 $bytes = [byte[]]::new($data.Stride * $h)
@@ -465,15 +476,19 @@ register("ocr", "图片文字识别(OCR) — Extract text from image", tool_ocr,
 def tool_screenshot_find(text_query: str):
     """截图 + OCR 查找文字位置，返回坐标可用于点击"""
     import time as _time
+    import base64 as _b64
     target = os.path.expanduser(f"~/Desktop/visual_{int(_time.time())}.png")
     r = tool_screenshot(target)
     if not r.get("ok"):
         return {"ok": False, "error": "截图失败: " + r.get("error", "")}
 
+    # 🔴 fix: base64-encode path + query to avoid PowerShell injection
+    encoded_target = _b64.b64encode(target.encode("utf-8")).decode("ascii")
     # Run OCR with word-level bounding boxes via PowerShell
     ps = f'''
     Add-Type -AssemblyName System.Drawing | Out-Null
-    $bmp = [System.Drawing.Bitmap]::FromFile("{target.replace(chr(92), chr(92)+chr(92))}")
+    $path = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("{encoded_target}"))
+    $bmp = [System.Drawing.Bitmap]::FromFile($path)
     $w = $bmp.Width; $h = $bmp.Height
     $data = $bmp.LockBits([System.Drawing.Rectangle]::new(0,0,$w,$h), [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $bytes = [byte[]]::new($data.Stride * $h)
@@ -491,7 +506,9 @@ def tool_screenshot_find(text_query: str):
     if (-not $engine) {{ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage("en") }}
     if ($engine) {{
         $result = $engine.RecognizeAsync($sb).GetAwaiter().GetResult()
-        $query = "{text_query.replace(chr(34), '').replace(chr(36), '').replace(chr(123), '').replace(chr(125), '')}".ToLower()
+        # 🔴 fix: base64-encode query to avoid PowerShell injection
+        $queryEncoded = "{_b64.b64encode(text_query.encode('utf-8')).decode('ascii')}"
+        $query = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($queryEncoded)).ToLower()
         $matches = @()
         foreach ($line in $result.Lines) {{
             foreach ($word in $line.Words) {{
@@ -1538,6 +1555,13 @@ def execute(tool_name, params):
         result = {"ok": False, "error": f"Invalid params: {e}"}
     except Exception as e:
         result = {"ok": False, "error": str(e)}
+
+    # 审计日志
+    try:
+        from tool_audit import log_tool_call
+        log_tool_call(tool_name, params, result)
+    except Exception:
+        pass
 
     # Cache successful results with LRU eviction
     if ttl and result.get("ok"):
