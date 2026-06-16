@@ -1399,7 +1399,7 @@ async function uploadFile(type) {
         previewEl.innerHTML = '<div style="background:var(--input-bg);padding:8px;border-radius:6px;max-height:100px;overflow-y:auto;font-size:11px;color:var(--muted)"><b>'+d.name+'</b><br>'+d.text.slice(0,300)+(d.text.length>300?'...':'')+'</div>'+closeBtn;
       } else {
         previewEl.innerHTML = (isImg
-          ? '<img src="'+d.url+'" style="max-height:80px;border-radius:6px">'
+          ? '<img src="'+d.url+'" style="max-height:80px;max-width:200px;width:auto;height:auto;object-fit:contain;border-radius:6px">'
           : '<video src="'+d.url+'" controls style="max-height:80px;border-radius:6px"></video>'
         ) + '<span style="color:#aaa;font-size:11px;margin-left:6px">'+d.name+'</span>'+closeBtn;
       }
@@ -1765,7 +1765,7 @@ document.addEventListener('paste', async function(e) {
           uploadedUrls.chat = d.url;
           let preview = document.getElementById('chatPreview');
           preview.style.display = 'flex';
-          preview.innerHTML = `<img src="${d.url}" style="max-height:60px;border-radius:6px"> <span style="color:#aaa;font-size:11px">截图已粘贴</span> <button onclick="clearUpload('chat')" style="color:#ef4444;background:none;border:none;cursor:pointer;font-size:16px">&times;</button>`;
+          preview.innerHTML = `<img src="${d.url}" style="max-height:60px;max-width:150px;width:auto;height:auto;object-fit:contain;border-radius:6px"> <span style="color:#aaa;font-size:11px">截图已粘贴</span> <button onclick="clearUpload('chat')" style="color:#ef4444;background:none;border:none;cursor:pointer;font-size:16px">&times;</button>`;
         }
       } catch(ex) {}
       break;
