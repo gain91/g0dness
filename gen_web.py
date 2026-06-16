@@ -222,10 +222,11 @@ VOLC_IMAGE_MODELS = {
 def volc_image_gen(prompt, model_key="seedream5", image_url=None):
     """Seedream 图像生成（支持参考图）
 
-    优先使用 .model_keys.json 中的 volcengine_endpoint_id (ep-xxx 格式)，
-    因为火山方舟现在要求推理接入点 ID，直接传模型名返回 404。
+    无参考图 → 直接调 /api/v3/images/generations (同步)
+    有参考图 → 调 /api/v3/contents/generations/tasks (异步轮询)
     """
     import urllib.request as ur
+    import urllib.error
     import base64
     keys_path = "C:/Users/86538/.model_keys.json"
     with open(keys_path) as f:
@@ -234,16 +235,14 @@ def volc_image_gen(prompt, model_key="seedream5", image_url=None):
     if not api_key:
         return None, "Volcengine key not set"
 
-    # 优先用 endpoint_id，fallback 到模型名称
     model = keys.get("volcengine_endpoint_id") or VOLC_IMAGE_MODELS.get(model_key, VOLC_IMAGE_MODELS["seedream5"])
 
-    body_dict = {"model": model, "n": 1}
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
 
-    # 有参考图时用 content 格式，否则用简单 prompt 格式
-    if image_url:
-        # 本地 URL 转 base64
-        if image_url.startswith("/output/") or "localhost" in image_url:
-            fname = image_url.split("/")[-1]
+    # 本地 URL 转 base64
+    def _to_base64(url):
+        if url.startswith("/output/") or "localhost" in url:
+            fname = url.split("/")[-1]
             fpath = os.path.join(OUTPUT_DIR, "uploads", fname)
             if not os.path.exists(fpath):
                 fpath = os.path.join(OUTPUT_DIR, fname)
@@ -252,36 +251,90 @@ def volc_image_gen(prompt, model_key="seedream5", image_url=None):
                 mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
                         "webp": "image/webp"}.get(ext.lstrip("."), "image/jpeg")
                 with open(fpath, "rb") as f:
-                    b64 = base64.b64encode(f.read()).decode()
-                image_url = f"data:{mime};base64,{b64}"
-        body_dict["content"] = [
-            {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": image_url}, "role": "reference_image"}
-        ]
-    else:
-        body_dict["prompt"] = prompt
+                    return f"data:{mime};base64,{base64.b64encode(f.read()).decode()}"
+        return url
 
-    body = json.dumps(body_dict).encode()
-    req = ur.Request(
-        "https://ark.cn-beijing.volces.com/api/v3/images/generations",
-        body,
-        headers={"Content-Type": "application/json",
-                  "Authorization": f"Bearer {api_key}"}
-    )
-    resp = json.loads(ur.urlopen(req, timeout=60).read())
-    img_url = resp.get("data", [{}])[0].get("url", "")
-    if img_url:
-        fname = f"seedream_{int(time.time())}.png"
-        local_path = os.path.join(OUTPUT_DIR, fname)
-        ur.urlretrieve(img_url, local_path)
-        # 费用追踪
+    if image_url:
+        # 有参考图 → 异步任务 API
+        image_url = _to_base64(image_url)
+        body = json.dumps({
+            "model": model,
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_url}, "role": "reference_image"}
+            ]
+        }).encode()
+        req = ur.Request("https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks",
+                         body, headers=headers)
         try:
-            from cost_tracker import track_image
-            track_image(model, 1)
-        except Exception:
-            pass
-        return f"/output/{fname}", None
-    return None, "No image in response"
+            resp = json.loads(ur.urlopen(req, timeout=30).read())
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace")
+            return None, f"HTTP {e.code}: {err_body}"
+        if "error" in resp:
+            return None, resp["error"].get("message", str(resp["error"]))
+        task_id = resp.get("id")
+        if not task_id:
+            return None, f"No task_id in response: {resp}"
+        # 轮询结果
+        for _ in range(60):  # max 5 min
+            time.sleep(5)
+            poll_req = ur.Request(
+                f"https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks/{task_id}",
+                headers={"Authorization": f"Bearer {api_key}"}
+            )
+            poll_resp = json.loads(ur.urlopen(poll_req, timeout=15).read())
+            status = poll_resp.get("status", "")
+            if status in ("completed", "succeeded"):
+                # 提取图片 URL
+                content = poll_resp.get("content", {})
+                img_url = ""
+                if isinstance(content, list):
+                    for item in content:
+                        if item.get("type") == "image_url":
+                            img_url = item["image_url"]["url"]
+                            break
+                elif isinstance(content, dict):
+                    img_url = content.get("image_url", "") or content.get("url", "")
+                if not img_url:
+                    img_url = poll_resp.get("output", {}).get("image_url", "")
+                if img_url:
+                    fname = f"seedream_{int(time.time())}.png"
+                    local_path = os.path.join(OUTPUT_DIR, fname)
+                    ur.urlretrieve(img_url, local_path)
+                    try:
+                        from cost_tracker import track_image
+                        track_image(model, 1)
+                    except Exception:
+                        pass
+                    return f"/output/{fname}", None
+                return None, f"No image in completed response: {json.dumps(poll_resp, ensure_ascii=False)[:500]}"
+            elif status in ("failed", "cancelled", "error"):
+                return None, f"Generation {status}: {json.dumps(poll_resp, ensure_ascii=False)[:500]}"
+        return None, "Timeout after 5 min"
+
+    else:
+        # 无参考图 → 同步 API
+        body = json.dumps({"model": model, "prompt": prompt, "n": 1}).encode()
+        req = ur.Request("https://ark.cn-beijing.volces.com/api/v3/images/generations",
+                         body, headers=headers)
+        try:
+            resp = json.loads(ur.urlopen(req, timeout=60).read())
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace")
+            return None, f"HTTP {e.code}: {err_body}"
+        img_url = resp.get("data", [{}])[0].get("url", "")
+        if img_url:
+            fname = f"seedream_{int(time.time())}.png"
+            local_path = os.path.join(OUTPUT_DIR, fname)
+            ur.urlretrieve(img_url, local_path)
+            try:
+                from cost_tracker import track_image
+                track_image(model, 1)
+            except Exception:
+                pass
+            return f"/output/{fname}", None
+        return None, "No image in response"
 
 def volc_video_create(prompt, model_key="seedance", image_url=None, ratio="16:9", duration=5):
     """创建火山引擎视频任务，返回 task_id"""
