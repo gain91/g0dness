@@ -1173,13 +1173,15 @@ async function send() {
 
 // ═══════ 生图 ═══════
 async function genImage() {
-  const prompt = document.getElementById('imgPrompt').value.trim();
+  const promptInput = document.getElementById('imgPrompt');
+  const prompt = promptInput.value.trim();
   if (!prompt) return alert('请输入画面描述');
   const imgModel = document.getElementById('imgModel').value;
 
   const btn = document.getElementById('genBtn');
   btn.disabled = true;
   btn.textContent = '⏳ 处理中...';
+  promptInput.value = '';
   document.getElementById('genResult').innerHTML = '';
 
   // Seedream 火山引擎系列
@@ -1192,7 +1194,7 @@ async function genImage() {
       const d = await r.json();
       const area = document.getElementById('genResult');
       if (d.ok && d.image) {
-        area.innerHTML = '<div class="card"><h2 style="color:#10b981">✅ Seedream 5.0</h2><img src="'+d.image+'" style="width:100%;border-radius:12px"></div>';
+        area.innerHTML = '<div class="card"><h2 style="color:#10b981">✅ Seedream 5.0</h2><img src="'+d.image+'" style="width:100%;height:auto;object-fit:contain;border-radius:12px"></div>';
       } else {
         area.innerHTML = '<div class="card" style="color:#ef4444">❌ '+(d.error||'失败')+'</div>';
       }
@@ -1212,7 +1214,7 @@ async function genImage() {
       const d = await r.json();
       const area = document.getElementById('genResult');
       if (d.ok && d.image) {
-        area.innerHTML = '<div class="card"><h2 style="color:#10b981">✅ '+provider+'</h2><img src="'+d.image+'" style="width:100%;border-radius:12px"></div>';
+        area.innerHTML = '<div class="card"><h2 style="color:#10b981">✅ '+provider+'</h2><img src="'+d.image+'" style="width:100%;height:auto;object-fit:contain;border-radius:12px"></div>';
       } else {
         area.innerHTML = '<div class="card" style="color:#ef4444">❌ '+(d.error||'失败')+'</div>';
       }
@@ -1271,7 +1273,7 @@ function pollGenResult() {
         html = '<div class="card"><h2 style="color:#10b981">✅ 生成完成</h2>';
         if (s.positive) html += '<p style="color:#a78bfa;font-size:13px">正向: '+s.positive+'</p>';
         if (s.seed) html += '<p style="color:#666;font-size:11px">Seed: '+s.seed+'</p>';
-        if (s.image) html += '<img src="'+s.image+'" alt="生成结果" style="width:100%;border-radius:12px;margin-top:8px">';
+        if (s.image) html += '<img src="'+s.image+'" alt="生成结果" style="width:100%;height:auto;object-fit:contain;border-radius:12px;margin-top:8px">';
         html += '<button class="mode-tab active" style="margin-top:12px;width:100%;padding:10px;font-size:14px;border-radius:8px;" onclick="switchToOllama()">🔄 切回对话模式</button>';
         html += '</div>';
       } else if (s.status === 'error') {
@@ -1306,13 +1308,15 @@ async function switchToOllama() {
 
 // ═══════ 生视频 ═══════
 async function genVideo() {
-  const prompt = document.getElementById('vidPrompt').value.trim();
+  const promptInput = document.getElementById('vidPrompt');
+  const prompt = promptInput.value.trim();
   if (!prompt) return alert('请输入画面描述');
   const model = document.getElementById('vidModel').value;
   const ratio = document.getElementById('vidRatio')?.value || '16:9';
   const duration = parseInt(document.getElementById('vidDuration')?.value || '5');
   const btn = document.getElementById('vidBtn');
   btn.disabled = true; btn.textContent = '⏳ 创建中...';
+  promptInput.value = '';
   document.getElementById('vidResult').innerHTML = '';
   try {
     const r = await fetch(GEN_API + '/api/generate_video', {
