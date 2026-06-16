@@ -262,7 +262,7 @@ def volc_image_gen(prompt, model_key="seedream5"):
         return f"/output/{fname}", None
     return None, "No image in response"
 
-def volc_video_create(prompt, model_key="seedance", image_url=None):
+def volc_video_create(prompt, model_key="seedance", image_url=None, ratio="16:9", duration=5):
     """创建火山引擎视频任务，返回 task_id"""
     import urllib.request as ur
     keys_path = "C:/Users/86538/.model_keys.json"
@@ -272,13 +272,25 @@ def volc_video_create(prompt, model_key="seedance", image_url=None):
     if not api_key:
         return None, "Volcengine key not set"
 
-    # 视频模型直接用模型名称，不用生图的 endpoint_id（混用会 400）
-    model = VOLC_VIDEO_MODELS.get(model_key, VOLC_VIDEO_MODELS["seedance"])
+    # 视频专用 endpoint_id，不用生图的
+    model = keys.get("volcengine_video_endpoint_id", "ep-20260616203500-hdrsf")
+
     content = [{"type": "text", "text": prompt}]
     if image_url:
-        content.append({"type": "image_url", "image_url": {"url": image_url}})
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": image_url},
+            "role": "reference_image"
+        })
 
-    body = json.dumps({"model": model, "content": content}).encode()
+    body_dict = {
+        "model": model,
+        "content": content,
+        "ratio": ratio,
+        "duration": duration,
+        "watermark": False,
+    }
+    body = json.dumps(body_dict).encode()
     req = ur.Request(
         "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks",
         body,
@@ -286,6 +298,8 @@ def volc_video_create(prompt, model_key="seedance", image_url=None):
                   "Authorization": f"Bearer {api_key}"}
     )
     resp = json.loads(ur.urlopen(req, timeout=30).read())
+    if "error" in resp:
+        return None, resp["error"].get("message", str(resp["error"]))
     return resp.get("id"), None
 
 def volc_video_poll(task_id):
@@ -386,19 +400,21 @@ async def api_generate_video(request: Request):
     user_input = data.get("prompt", "").strip()
     model = data.get("model", "seedance")
     image_url = data.get("image_url")
+    ratio = data.get("ratio", "16:9")
+    duration = data.get("duration", 5)
     if not user_input: return JSONResponse({"error": "请输入描述"}, 400)
     video_state = {"status": "creating", "message": "创建视频任务...", "url": None, "task_id": None}
-    threading.Thread(target=volc_video_worker, args=(user_input, model, image_url), daemon=True).start()
+    threading.Thread(target=volc_video_worker, args=(user_input, model, image_url, ratio, duration), daemon=True).start()
     return {"ok": True}
 
 @app.get("/api/video_status")
 async def api_video_status():
     return video_state
 
-def volc_video_worker(prompt, model, image_url=None):
+def volc_video_worker(prompt, model, image_url=None, ratio="16:9", duration=5):
     global video_state
     try:
-        task_id, err = volc_video_create(prompt, model, image_url)
+        task_id, err = volc_video_create(prompt, model, image_url, ratio, duration)
         if err:
             video_state["status"] = "error"; video_state["message"] = err; return
         video_state["task_id"] = task_id

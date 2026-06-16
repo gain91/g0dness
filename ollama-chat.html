@@ -472,6 +472,15 @@ body {
         <option value="seedance">Seedance 2.0</option>
         <option value="wan_i2v">Wan 图生</option>
       </select>
+      <select id="vidRatio" style="background:var(--input-bg);color:var(--text);border:1px solid var(--border);padding:6px 8px;border-radius:6px;font-size:12px;width:80px;height:44px">
+        <option value="16:9">16:9</option>
+        <option value="9:16">9:16</option>
+        <option value="1:1">1:1</option>
+      </select>
+      <select id="vidDuration" style="background:var(--input-bg);color:var(--text);border:1px solid var(--border);padding:6px 8px;border-radius:6px;font-size:12px;width:60px;height:44px">
+        <option value="5">5s</option>
+        <option value="10">10s</option>
+      </select>
       <textarea id="vidPrompt" placeholder="输入画面描述..." rows="1" style="flex:1;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:14px;resize:none;min-height:44px;max-height:150px;font-family:inherit" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();genVideo()}" oninput="autoResize(this)"></textarea>
       <button style="background:var(--accent);color:#fff;border:none;padding:10px 16px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:bold;white-space:nowrap;height:44px" id="vidBtn" onclick="genVideo()">生成</button>
       <input type="file" id="vidFile" accept="image/*" style="display:none" onchange="uploadFile('video')">
@@ -1300,13 +1309,15 @@ async function genVideo() {
   const prompt = document.getElementById('vidPrompt').value.trim();
   if (!prompt) return alert('请输入画面描述');
   const model = document.getElementById('vidModel').value;
+  const ratio = document.getElementById('vidRatio')?.value || '16:9';
+  const duration = parseInt(document.getElementById('vidDuration')?.value || '5');
   const btn = document.getElementById('vidBtn');
   btn.disabled = true; btn.textContent = '⏳ 创建中...';
   document.getElementById('vidResult').innerHTML = '';
   try {
     const r = await fetch(GEN_API + '/api/generate_video', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({prompt: prompt, model: model, image_url: uploadedUrls.video || null})
+      body: JSON.stringify({prompt, model, image_url: uploadedUrls.video || null, ratio, duration})
     });
     if (!r.ok) { const e=await r.json(); alert(e.error); btn.disabled=false; btn.textContent='生成'; return; }
     pollVidResult();
