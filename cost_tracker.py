@@ -17,7 +17,7 @@ PRICING = {
     # OpenRouter / Anthropic
     "anthropic/claude-fable-5": {"input": 15, "output": 75},
     "anthropic/claude-sonnet-4-6": {"input": 3, "output": 15},
-    "anthropic/claude-haiku-4-5": {"input": 0.80, "output": 4},
+    "anthropic/claude-haiku-4-5-20251001": {"input": 0.80, "output": 4},
     # OpenRouter / OpenAI
     "openai/gpt-5.5": {"input": 2.5, "output": 10},
     "openai/gpt-4o-mini": {"input": 0.15, "output": 0.60},

@@ -20,6 +20,18 @@ DEFAULTS = {
         "request_timeout": 120,
         "stream_timeout": 300,
     },
+    "agent": {
+        "desloppify": True,
+        "max_turns": 15,
+        "goal_check_model": "qwen3:8b",
+    },
+    "cost_routing": {
+        "simple_threshold": 200,
+        "medium_threshold": 800,
+        "simple_model": "ollama",
+        "medium_model": "deepseek",
+        "budget_limit": 0,
+    },
     "tools": {
         "shell_timeout": 30,
         "cache_ttl": {
@@ -66,9 +78,11 @@ def load_config() -> dict:
 
 def save_config(cfg: dict):
     """保存配置到 JSON 文件"""
+    global _config_cache
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
+    _config_cache = None  # 清除缓存，下次 get() 读新值
 
 
 def get(section: str, key: str, default=None):

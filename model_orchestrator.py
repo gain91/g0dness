@@ -103,15 +103,22 @@ class AIGateway:
 
     def __init__(self):
         self.usage = {"calls": 0, "tokens": 0, "providers": {}}
+        self.budget_limit = 0  # 0 = 不限制 (token 数)
 
     def chat(self, prompt: str, system: str = "", provider: str = None,
-             submodel: str = "claude") -> dict:
+             submodel: str = "claude", budget_limit: int = None) -> dict:
         """
         统一对话 — 自动路由或指定提供商。
         返回: {provider, reply, error, tokens_used}
         """
         import time as _t
         start = _t.time()
+
+        # 预算检查
+        effective_budget = budget_limit or self.budget_limit
+        if effective_budget and self.usage["tokens"] >= effective_budget:
+            return {"provider": "none", "reply": "", "error": f"预算已耗尽 ({self.usage['tokens']}/{effective_budget} tokens)",
+                    "tokens": 0, "elapsed_s": 0}
 
         if not provider:
             provider = smart_route(prompt)
@@ -458,43 +465,64 @@ def chat_gpt(prompt: str, system: str = "") -> str:
 ROUTING_PROMPT = """你是一个任务路由器。根据用户输入复杂度选择合适的模型。
 
 可选模型（按价格从低到高）：
-- ollama: 本地免费，适合一般对话、翻译、简单代码
+- ollama: 本地免费，适合一般对话、翻译、简单问答
+- deepseek: 便宜（¥1/M），国内直连，适合中等推理、代码、分析
 - claude-haiku: 便宜快速，适合日常问答 (OpenRouter)
 - gemini-fast: 便宜快速，适合简单任务 (OpenRouter)
-- gpt-mini: 便宜，适合创意简单任务 (OpenRouter)
+- gpt-mini: 便宜，适合创意任务 (OpenRouter)
 - claude-sonnet: 性价比，适合中等推理 (OpenRouter)
 - gemini: 均衡，适合多模态分析 (OpenRouter)
 - claude: 最强，适合深度推理、复杂分析、长文本 (OpenRouter)
 - gpt: 最强，适合复杂创意 (OpenRouter)
 
-规则：简单任务用便宜模型，复杂任务才用最强模型。
-只回复模型名: ollama, claude-haiku, claude-sonnet, claude, gpt-mini, gpt, gemini-fast, gemini
+规则：简单任务用 ollama/deepseek，复杂任务才用 OpenRouter 云端模型。
+只回复模型名: ollama, deepseek, claude-haiku, gemini-fast, gpt-mini, claude-sonnet, gemini, claude, gpt
 
 用户输入: {input}
 """
 
 def smart_route(user_input: str) -> str:
-    """用本地 Ollama 判断复杂度 + 硬件状态选择模型"""
-    # 硬件感知：低资源时优先用云端便宜模型
+    """智能路由 — 硬件感知 + 复杂度阈值 + LLM 判断"""
+    from config import get as cfg_get
+
+    # 硬件感知：低资源时优先用本地模型
     try:
         from hw_monitor import get_tier
         tier = get_tier()
     except:
         tier = "medium"
 
+    # === 成本阈值路由: 短文本直接走便宜模型，省一次 LLM 调用 ===
+    text_len = len(user_input)
+    simple_keywords = ['代码', 'code', '分析', 'analyze', 'debug', '重构', 'refactor',
+                       '写一个', '实现', 'implement', '设计', 'design', '架构', 'architect']
+    is_complex = any(kw in user_input.lower() for kw in simple_keywords)
+
+    simple_model = cfg_get("cost_routing", "simple_model", "ollama")
+    medium_model = cfg_get("cost_routing", "medium_model", "deepseek")
+    simple_threshold = cfg_get("cost_routing", "simple_threshold", 200)
+    medium_threshold = cfg_get("cost_routing", "medium_threshold", 800)
+
+    # 简单任务: 短文本 + 无复杂关键词 → 便宜模型
+    if text_len < simple_threshold and not is_complex:
+        return simple_model
+
+    # 中等任务: 中等长度 → 性价比模型
+    if text_len < medium_threshold and not is_complex:
+        return medium_model
+
+    # 复杂任务: 走 LLM 路由判断
     try:
         result = chat_ollama(ROUTING_PROMPT.format(input=user_input[:500]))
         result = result.strip().lower()
-        for m in ["claude-haiku", "claude-sonnet", "claude",
-                  "gpt-mini", "gpt",
-                  "gemini-fast", "gemini",
-                  "ollama"]:
+        # 长名称优先匹配，避免 "claude" 匹配到 "claude-haiku"
+        for m in ["claude-haiku", "claude-sonnet", "gpt-mini", "gemini-fast",
+                  "claude", "gpt", "gemini", "deepseek", "ollama"]:
             if m in result:
                 return m
-        return "ollama"
+        return "deepseek"  # 复杂任务默认 DeepSeek
     except:
-        # 硬件降级：极简模式强制本地
-        return "ollama" if tier == "minimal" else "gemini-fast"
+        return "ollama" if tier == "minimal" else "deepseek"
 
 # ═══════ 统一入口 ═══════
 def chat(user_input: str, force_model: Optional[str] = None, submodel: str = "claude") -> dict:

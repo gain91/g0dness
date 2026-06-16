@@ -60,12 +60,15 @@ DECOMPOSE_PROMPT = """你是一个任务分解专家。把用户任务分解为 
 
 规则:
 - 简单任务用 1 个角色，复杂任务可以 2-4 个
-- 需要搜索+写代码的任务：researcher 先搜，coder 后写
 - 有依赖关系的标 depends_on (数组，0开始索引)
+- depends_on 必须是真实的代码/数据依赖，不是"先搜索再写代码"的流程依赖
+- 如果步骤 A 的输出是步骤 B 的输入，B 才 depends_on A
+- 无依赖的步骤会并行执行，有依赖的步骤等待前置完成
 - 纯粹对话/问答用 general
 
 输出 JSON 数组，只输出 JSON：
-[{"role": "researcher", "task": "搜索GPU价格", "depends_on": []}]
+[{"role": "researcher", "task": "搜索GPU价格", "depends_on": []},
+ {"role": "coder", "task": "根据搜索结果写分析报告", "depends_on": [0]}]
 
 用户任务: {task}
 """
@@ -149,119 +152,151 @@ class AgentTeam:
         self.results: Dict[str, dict] = {}
         self.events: list = []
 
+    def _topo_layers(self, steps: list) -> list:
+        """DAG 拓扑排序 — 返回按依赖层级分组的步骤索引列表"""
+        n = len(steps)
+        graph = {i: set(steps[i].get("depends_on", [])) for i in range(n)}
+        completed = set()
+        layers = []
+        while len(completed) < n:
+            layer = [i for i in range(n) if i not in completed and graph[i].issubset(completed)]
+            if not layer:
+                # 循环依赖或死锁 — 剩余步骤强制串行
+                remaining = [i for i in range(n) if i not in completed]
+                if remaining:
+                    layers.append(remaining[:1])
+                    completed.add(remaining[0])
+                else:
+                    break
+            else:
+                layers.append(layer)
+                completed.update(layer)
+        return layers
+
+    def _build_dep_context(self, step_idx: int, steps: list, results: dict) -> str:
+        """构建依赖步骤的上下文注入"""
+        deps = steps[step_idx].get("depends_on", [])
+        if not deps:
+            return ""
+        parts = ["前置步骤结果:"]
+        for dep_idx in deps:
+            key = f"step_{dep_idx}"
+            if key in results:
+                r = results[key].get("result", {})
+                text = r.get("text", r.get("result", ""))[:500]
+                role = results[key].get("role", "?")
+                parts.append(f"  步骤{dep_idx}({role}): {text}")
+        return "\n".join(parts) if len(parts) > 1 else ""
+
     def run(self, task: str) -> dict:
-        """同步运行多 Agent 团队"""
+        """同步运行多 Agent 团队 — DAG 拓扑执行"""
         steps = decompose_task(task)
         self.events = [{"type": "plan", "steps": len(steps), "detail": steps}]
-
-        # Separate parallel vs dependent steps
-        parallel_steps = [s for s in steps if not s.get("depends_on")]
-        dependent_steps = [s for s in steps if s.get("depends_on")]
-
         results = {}
 
-        # Phase 1: Run parallel steps
-        if parallel_steps:
-            with ThreadPoolExecutor(max_workers=min(self.max_parallel, len(parallel_steps))) as pool:
-                futures = {}
-                for i, step in enumerate(parallel_steps):
-                    f = pool.submit(self._run_agent, step["role"], step["task"], f"agent_{i}")
-                    futures[f] = (i, step)
+        layers = self._topo_layers(steps)
+        for layer in layers:
+            if len(layer) == 1:
+                # 单步骤 — 直接执行
+                i = layer[0]
+                step = steps[i]
+                dep_ctx = self._build_dep_context(i, steps, results)
+                full_task = f"{step['task']}\n\n{dep_ctx}" if dep_ctx else step["task"]
+                try:
+                    result = self._run_agent(step["role"], full_task, f"agent_{i}")
+                    results[f"step_{i}"] = {"role": step["role"], "task": step["task"], "result": result}
+                    self.events.append({"type": "step_done", "agent": step["role"],
+                                       "task": step["task"][:80], "result": result})
+                except Exception as e:
+                    results[f"step_{i}"] = {"role": step["role"], "error": str(e)}
+                    self.events.append({"type": "step_error", "agent": step["role"], "error": str(e)})
+            else:
+                # 多步骤 — 并行执行
+                with ThreadPoolExecutor(max_workers=min(self.max_parallel, len(layer))) as pool:
+                    futures = {}
+                    for i in layer:
+                        step = steps[i]
+                        dep_ctx = self._build_dep_context(i, steps, results)
+                        full_task = f"{step['task']}\n\n{dep_ctx}" if dep_ctx else step["task"]
+                        f = pool.submit(self._run_agent, step["role"], full_task, f"agent_{i}")
+                        futures[f] = (i, step)
 
-                for future in as_completed(futures):
-                    i, step = futures[future]
-                    try:
-                        result = future.result()
-                        results[f"step_{i}"] = {
-                            "role": step["role"],
-                            "task": step["task"],
-                            "result": result
-                        }
-                        self.events.append({"type": "step_done", "agent": step["role"],
-                                           "task": step["task"][:80], "result": result})
-                    except Exception as e:
-                        results[f"step_{i}"] = {"role": step["role"], "error": str(e)}
-                        self.events.append({"type": "step_error", "agent": step["role"], "error": str(e)})
+                    for future in as_completed(futures):
+                        i, step = futures[future]
+                        try:
+                            result = future.result()
+                            results[f"step_{i}"] = {"role": step["role"], "task": step["task"], "result": result}
+                            self.events.append({"type": "step_done", "agent": step["role"],
+                                               "task": step["task"][:80], "result": result})
+                        except Exception as e:
+                            results[f"step_{i}"] = {"role": step["role"], "error": str(e)}
+                            self.events.append({"type": "step_error", "agent": step["role"], "error": str(e)})
 
-        # Phase 2: Run dependent steps (with context from phase 1)
-        for step in dependent_steps:
-            context = json.dumps(results, ensure_ascii=False)[:3000]
-            full_task = f"{step['task']}\n\n前期结果:\n{context}"
-            try:
-                result = self._run_agent(step["role"], full_task, "synthesizer")
-                key = f"step_{len(results)}"
-                results[key] = {"role": step["role"], "task": step["task"], "result": result}
-                self.events.append({"type": "step_done", "agent": step["role"], "result": result})
-            except Exception as e:
-                self.events.append({"type": "step_error", "agent": step["role"], "error": str(e)})
-
-        # Build final result
-        # 取最后一个成功步骤的结果，而非依赖长度索引
+        # 取最后一个成功步骤的结果
         final_keys = sorted([k for k in results if results.get(k)], key=lambda k: int(k.split("_")[1]))
         final = results.get(final_keys[-1], {}).get("result", {}) if final_keys else {}
         if not final or not final.get("success"):
             final = {"success": True, "text": self._build_summary(results), "steps": len(steps)}
-
         self.events.append({"type": "done", "steps": len(steps), "result": final})
         return final
 
     def stream(self, task: str):
-        """流式运行多 Agent 团队"""
+        """流式运行多 Agent 团队 — DAG 拓扑执行"""
         for event in self._stream_internal(task):
             yield event
 
     def _stream_internal(self, task: str):
         steps = decompose_task(task)
         yield {"type": "plan", "steps": len(steps), "detail": steps}
-
-        parallel_steps = [s for s in steps if not s.get("depends_on")]
-        dependent_steps = [s for s in steps if s.get("depends_on")]
         results = {}
 
-        # Phase 1: Parallel
-        if parallel_steps:
-            with ThreadPoolExecutor(max_workers=min(self.max_parallel, len(parallel_steps))) as pool:
-                futures = {}
-                for i, step in enumerate(parallel_steps):
-                    f = pool.submit(self._run_agent_stream, step["role"], step["task"], f"agent_{i}")
-                    futures[f] = (i, step)
+        layers = self._topo_layers(steps)
+        for layer_idx, layer in enumerate(layers):
+            yield {"type": "layer", "layer": layer_idx, "steps": layer, "parallel": len(layer) > 1}
 
-                for future in as_completed(futures):
-                    i, step = futures[future]
-                    try:
-                        agent_events, agent_result = future.result()
-                        results[f"step_{i}"] = {"role": step["role"], "task": step["task"], "result": agent_result}
-                        for evt in agent_events:
-                            evt["agent"] = step["role"]
-                            evt["agent_id"] = i
-                            yield evt
-                        yield {"type": "step_done", "agent": step["role"], "agent_id": i,
-                               "task": step["task"][:80], "result": agent_result}
-                    except Exception as e:
-                        yield {"type": "step_error", "agent": step["role"], "agent_id": i, "error": str(e)}
+            if len(layer) == 1:
+                # 单步骤 — 直接执行
+                i = layer[0]
+                step = steps[i]
+                dep_ctx = self._build_dep_context(i, steps, results)
+                full_task = f"{step['task']}\n\n{dep_ctx}" if dep_ctx else step["task"]
+                try:
+                    agent_events, agent_result = self._run_agent_stream(step["role"], full_task, f"agent_{i}")
+                    results[f"step_{i}"] = {"role": step["role"], "task": step["task"], "result": agent_result}
+                    for evt in agent_events:
+                        evt["agent"] = step["role"]
+                        evt["agent_id"] = i
+                        yield evt
+                    yield {"type": "step_done", "agent": step["role"], "agent_id": i,
+                           "task": step["task"][:80], "result": agent_result}
+                except Exception as e:
+                    yield {"type": "step_error", "agent": step["role"], "agent_id": i, "error": str(e)}
+            else:
+                # 多步骤 — 并行执行
+                with ThreadPoolExecutor(max_workers=min(self.max_parallel, len(layer))) as pool:
+                    futures = {}
+                    for i in layer:
+                        step = steps[i]
+                        dep_ctx = self._build_dep_context(i, steps, results)
+                        full_task = f"{step['task']}\n\n{dep_ctx}" if dep_ctx else step["task"]
+                        f = pool.submit(self._run_agent_stream, step["role"], full_task, f"agent_{i}")
+                        futures[f] = (i, step)
 
-        # Phase 2: Dependent
-        for step in dependent_steps:
-            # 过滤失败步骤，扩容上下文至 1500 字符
-            context = json.dumps({
-                k: v.get("result", {}).get("text", "")[:1500]
-                for k, v in results.items()
-                if v and not v.get("result", {}).get("error")
-            }, ensure_ascii=False)
-            full_task = f"{step['task']}\n\n前期结果:\n{context}"
-            try:
-                agent_events, agent_result = self._run_agent_stream(step["role"], full_task, "synthesizer")
-                key = f"step_{len(results)}"
-                results[key] = {"role": step["role"], "task": step["task"], "result": agent_result}
-                for evt in agent_events:
-                    evt["agent"] = step["role"]
-                    evt["agent_id"] = "synthesizer"
-                    yield evt
-                yield {"type": "step_done", "agent": step["role"], "agent_id": "synthesizer", "result": agent_result}
-            except Exception as e:
-                yield {"type": "step_error", "agent": step["role"], "agent_id": "synthesizer", "error": str(e)}
+                    for future in as_completed(futures):
+                        i, step = futures[future]
+                        try:
+                            agent_events, agent_result = future.result()
+                            results[f"step_{i}"] = {"role": step["role"], "task": step["task"], "result": agent_result}
+                            for evt in agent_events:
+                                evt["agent"] = step["role"]
+                                evt["agent_id"] = i
+                                yield evt
+                            yield {"type": "step_done", "agent": step["role"], "agent_id": i,
+                                   "task": step["task"][:80], "result": agent_result}
+                        except Exception as e:
+                            yield {"type": "step_error", "agent": step["role"], "agent_id": i, "error": str(e)}
 
-        # 取最后一个成功步骤的结果，而非依赖长度索引
+        # 取最后一个成功步骤的结果
         final_keys = sorted([k for k in results if results.get(k)], key=lambda k: int(k.split("_")[1]))
         final = results.get(final_keys[-1], {}).get("result", {}) if final_keys else {}
         if not final or not final.get("success"):
