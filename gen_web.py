@@ -272,8 +272,8 @@ def volc_video_create(prompt, model_key="seedance", image_url=None):
     if not api_key:
         return None, "Volcengine key not set"
 
-    # 优先用 endpoint_id，fallback 到模型名称（同生图 404 问题）
-    model = keys.get("volcengine_endpoint_id") or VOLC_VIDEO_MODELS.get(model_key, VOLC_VIDEO_MODELS["seedance"])
+    # 视频模型直接用模型名称，不用生图的 endpoint_id（混用会 400）
+    model = VOLC_VIDEO_MODELS.get(model_key, VOLC_VIDEO_MODELS["seedance"])
     content = [{"type": "text", "text": prompt}]
     if image_url:
         content.append({"type": "image_url", "image_url": {"url": image_url}})
