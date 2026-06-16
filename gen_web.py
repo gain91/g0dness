@@ -265,6 +265,7 @@ def volc_image_gen(prompt, model_key="seedream5"):
 def volc_video_create(prompt, model_key="seedance", image_url=None, ratio="16:9", duration=5):
     """创建火山引擎视频任务，返回 task_id"""
     import urllib.request as ur
+    import urllib.error
     keys_path = "C:/Users/86538/.model_keys.json"
     with open(keys_path) as f:
         keys = json.load(f)
@@ -272,11 +273,25 @@ def volc_video_create(prompt, model_key="seedance", image_url=None, ratio="16:9"
     if not api_key:
         return None, "Volcengine key not set"
 
-    # 视频专用 endpoint_id，不用生图的
+    # 视频专用 endpoint_id
     model = keys.get("volcengine_video_endpoint_id", "ep-20260616203500-hdrsf")
 
     content = [{"type": "text", "text": prompt}]
     if image_url:
+        # 本地 URL 转 base64（火山引擎无法访问 localhost）
+        if image_url.startswith("/output/") or "localhost" in image_url:
+            fname = image_url.split("/")[-1]
+            fpath = os.path.join(OUTPUT_DIR, "uploads", fname)
+            if not os.path.exists(fpath):
+                fpath = os.path.join(OUTPUT_DIR, fname)
+            if os.path.exists(fpath):
+                import base64
+                ext = os.path.splitext(fname)[1].lower()
+                mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                        "webp": "image/webp", "gif": "image/gif"}.get(ext.lstrip("."), "image/jpeg")
+                with open(fpath, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode()
+                image_url = f"data:{mime};base64,{b64}"
         content.append({
             "type": "image_url",
             "image_url": {"url": image_url},
@@ -290,14 +305,18 @@ def volc_video_create(prompt, model_key="seedance", image_url=None, ratio="16:9"
         "duration": duration,
         "watermark": False,
     }
-    body = json.dumps(body_dict).encode()
+    body = json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
     req = ur.Request(
         "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks",
         body,
-        headers={"Content-Type": "application/json",
+        headers={"Content-Type": "application/json; charset=utf-8",
                   "Authorization": f"Bearer {api_key}"}
     )
-    resp = json.loads(ur.urlopen(req, timeout=30).read())
+    try:
+        resp = json.loads(ur.urlopen(req, timeout=30).read())
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace")
+        return None, f"HTTP {e.code}: {err_body}"
     if "error" in resp:
         return None, resp["error"].get("message", str(resp["error"]))
     return resp.get("id"), None
