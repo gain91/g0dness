@@ -1189,7 +1189,7 @@ async function genImage() {
     try {
       const r = await fetch(GEN_API + '/api/seedream', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({prompt: prompt, model: imgModel})
+        body: JSON.stringify({prompt: prompt, model: imgModel, image_url: uploadedUrls.image || null})
       });
       const d = await r.json();
       const area = document.getElementById('genResult');

@@ -219,13 +219,14 @@ VOLC_IMAGE_MODELS = {
     "seedream5": "doubao-seedream-5-0-260128",
 }
 
-def volc_image_gen(prompt, model_key="seedream5"):
-    """Seedream 图像生成
+def volc_image_gen(prompt, model_key="seedream5", image_url=None):
+    """Seedream 图像生成（支持参考图）
 
     优先使用 .model_keys.json 中的 volcengine_endpoint_id (ep-xxx 格式)，
     因为火山方舟现在要求推理接入点 ID，直接传模型名返回 404。
     """
     import urllib.request as ur
+    import base64
     keys_path = "C:/Users/86538/.model_keys.json"
     with open(keys_path) as f:
         keys = json.load(f)
@@ -236,11 +237,31 @@ def volc_image_gen(prompt, model_key="seedream5"):
     # 优先用 endpoint_id，fallback 到模型名称
     model = keys.get("volcengine_endpoint_id") or VOLC_IMAGE_MODELS.get(model_key, VOLC_IMAGE_MODELS["seedream5"])
 
-    body = json.dumps({
-        "model": model,
-        "prompt": prompt,
-        "n": 1
-    }).encode()
+    body_dict = {"model": model, "n": 1}
+
+    # 有参考图时用 content 格式，否则用简单 prompt 格式
+    if image_url:
+        # 本地 URL 转 base64
+        if image_url.startswith("/output/") or "localhost" in image_url:
+            fname = image_url.split("/")[-1]
+            fpath = os.path.join(OUTPUT_DIR, "uploads", fname)
+            if not os.path.exists(fpath):
+                fpath = os.path.join(OUTPUT_DIR, fname)
+            if os.path.exists(fpath):
+                ext = os.path.splitext(fname)[1].lower()
+                mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                        "webp": "image/webp"}.get(ext.lstrip("."), "image/jpeg")
+                with open(fpath, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode()
+                image_url = f"data:{mime};base64,{b64}"
+        body_dict["content"] = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": image_url}, "role": "reference_image"}
+        ]
+    else:
+        body_dict["prompt"] = prompt
+
+    body = json.dumps(body_dict).encode()
     req = ur.Request(
         "https://ark.cn-beijing.volces.com/api/v3/images/generations",
         body,
@@ -387,9 +408,10 @@ async def api_seedream(request: Request):
     data = await request.json()
     prompt = data.get("prompt", "").strip()
     model = data.get("model", "seedream5")
+    image_url = data.get("image_url")
     if not prompt: return JSONResponse({"error": "empty prompt"}, 400)
     try:
-        url, err = volc_image_gen(prompt, model)
+        url, err = volc_image_gen(prompt, model, image_url)
         if err: return JSONResponse({"ok": False, "error": err}, 500)
         return {"ok": True, "image": url, "provider": model}
     except Exception as e:
