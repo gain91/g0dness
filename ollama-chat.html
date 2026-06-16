@@ -77,7 +77,12 @@ body {
 /* ── Layout ── */
 .main { flex:1; display:flex; flex-direction:column; overflow:hidden; }
 .layout { display:flex; flex:1; overflow:hidden; }
-.chat { flex:1; overflow-y:auto; padding:24px 20px; display:flex; flex-direction:column; gap:20px; scroll-behavior:smooth; }
+.chat { flex:1; overflow-y:auto; padding:24px 20px; display:flex; flex-direction:column; gap:20px; scroll-behavior:smooth; position:relative; }
+.scroll-bottom { position:absolute; bottom:16px; right:20px; width:36px; height:36px; border-radius:50%;
+  background:var(--accent); color:#fff; border:none; cursor:pointer; font-size:16px; display:none;
+  box-shadow:0 2px 8px rgba(0,0,0,.2); z-index:10; transition:opacity .2s,transform .2s; opacity:0; transform:scale(0.8); }
+.scroll-bottom.show { display:flex; align-items:center; justify-content:center; opacity:1; transform:scale(1); }
+.scroll-bottom:hover { background:var(--accent-hover); }
 
 /* ── Messages ── */
 .msg { max-width:80%; padding:14px 18px; border-radius:var(--radius-lg); line-height:1.65;
@@ -391,7 +396,9 @@ body {
 
   <div class="main" style="flex:1">
     <!-- Chat -->
-    <div class="chat" id="chatView"></div>
+    <div class="chat" id="chatView">
+      <button class="scroll-bottom" id="scrollBtn" onclick="scrollToBottom()" title="回到底部">↓</button>
+    </div>
 
     <!-- Agent -->
     <div class="chat hidden" id="agentView">
@@ -1070,10 +1077,26 @@ function addMsg(role, content) {
   }
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
+  updateScrollBtn();
   // 非 system 消息记录 token
   if (role !== 'system') logMessage(role, content);
   return div;
 }
+
+// ── 回到底部按钮 ──
+function updateScrollBtn() {
+  const chat = document.getElementById('chatView');
+  const btn = document.getElementById('scrollBtn');
+  if (!chat || !btn) return;
+  const atBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 100;
+  btn.classList.toggle('show', !atBottom);
+}
+function scrollToBottom() {
+  const chat = document.getElementById('chatView');
+  chat.scrollTop = chat.scrollHeight;
+  updateScrollBtn();
+}
+document.getElementById('chatView')?.addEventListener('scroll', updateScrollBtn);
 
 async function send() {
   const input = document.getElementById('input');
