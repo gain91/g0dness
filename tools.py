@@ -3,6 +3,64 @@ AI Suite — Tool System (MCP-compatible)
 工具注册 + 执行引擎，通过 /api/tools 暴露给前端
 """
 import os, subprocess, json, tempfile
+from functools import lru_cache
+from typing import Any, Dict
+import threading
+import time as _time
+
+# ═══════ 并发控制 ═══════
+_tool_semaphore = threading.Semaphore(10)  # 最多10个并发工具调用
+_tool_cache_lock = threading.Lock()
+_tool_result_cache: Dict[str, Any] = {}
+_tool_cache_ttl: Dict[str, float] = {}
+TOOL_CACHE_MAX_SIZE = 100
+TOOL_CACHE_TTL_SECONDS = 60  # 缓存有效期60秒
+
+def _cache_tool_result(tool_name: str, args_hash: str, result: Any) -> Any:
+    """缓存工具结果"""
+    cache_key = f"{tool_name}:{args_hash}"
+    with _tool_cache_lock:
+        # 清理过期缓存
+        current_time = _time.time()
+        expired_keys = [k for k, t in _tool_cache_ttl.items() if current_time - t > TOOL_CACHE_TTL_SECONDS]
+        for k in expired_keys:
+            _tool_result_cache.pop(k, None)
+            _tool_cache_ttl.pop(k, None)
+
+        # 清理超过大小限制的缓存
+        while len(_tool_result_cache) >= TOOL_CACHE_MAX_SIZE:
+            oldest_key = min(_tool_cache_ttl.items(), key=lambda x: x[1])[0]
+            _tool_result_cache.pop(oldest_key, None)
+            _tool_cache_ttl.pop(oldest_key, None)
+
+        # 存储新结果
+        _tool_result_cache[cache_key] = result
+        _tool_cache_ttl[cache_key] = current_time
+
+    return result
+
+def _get_cached_result(tool_name: str, args_hash: str) -> Any:
+    """获取缓存的工具结果"""
+    cache_key = f"{tool_name}:{args_hash}"
+    with _tool_cache_lock:
+        if cache_key in _tool_result_cache:
+            current_time = _time.time()
+            if current_time - _tool_cache_ttl.get(cache_key, 0) < TOOL_CACHE_TTL_SECONDS:
+                return _tool_result_cache[cache_key]
+            else:
+                # 缓存过期
+                _tool_result_cache.pop(cache_key, None)
+                _tool_cache_ttl.pop(cache_key, None)
+    return None
+
+def _hash_args(args: dict) -> str:
+    """计算参数的哈希值用于缓存键"""
+    import hashlib
+    try:
+        args_str = json.dumps(args, sort_keys=True)
+        return hashlib.md5(args_str.encode()).hexdigest()
+    except:
+        return str(hash(str(args)))
 
 # ═══════ MarkItDown 集成（微软开源）═══════
 try:
@@ -373,6 +431,124 @@ register("open_browser", "默认浏览器打开 URL — Open browser", tool_open
 register("screenshot", "屏幕截图保存为文件 — Take screenshot", tool_screenshot,
          {"path": {"type": "string", "optional": True}})
 
+# ─── Windows OCR PowerShell Templates (extracted for reuse) ───
+
+def _run_windows_ocr(image_path: str) -> dict:
+    """
+    运行 Windows 内置 OCR 引擎。
+    Returns: {"ok": True, "text": str} 或 {"ok": False, "error": str}
+    """
+    import base64 as _b64
+    try:
+        # 🔴 fix: base64-encode path to avoid PowerShell injection
+        encoded_path = _b64.b64encode(image_path.encode("utf-8")).decode("ascii")
+        ps_script = f'''
+        Add-Type -AssemblyName System.Drawing | Out-Null
+        $path = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("{encoded_path}"))
+        $bmp = [System.Drawing.Bitmap]::FromFile($path)
+        $w = $bmp.Width; $h = $bmp.Height
+        $data = $bmp.LockBits([System.Drawing.Rectangle]::new(0,0,$w,$h), [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        $bytes = [byte[]]::new($data.Stride * $h)
+        [System.Runtime.InteropServices.Marshal]::Copy($data.Scan0, $bytes, 0, $bytes.Length)
+        $bmp.UnlockBits($data); $bmp.Dispose()
+
+        [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType = WindowsRuntime] | Out-Null
+        [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Graphics.Imaging, ContentType = WindowsRuntime] | Out-Null
+        [Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType = WindowsRuntime] | Out-Null
+
+        $sb = [Windows.Graphics.Imaging.SoftwareBitmap]::CreateCopyFromBuffer(
+            [Windows.Security.Cryptography.CryptographicBuffer]::CreateFromByteArray($bytes),
+            [Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8, $w, $h)
+        $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+        if (-not $engine) {{ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage("zh-Hans") }}
+        if (-not $engine) {{ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage("en") }}
+        if ($engine) {{
+            $result = $engine.RecognizeAsync($sb).GetAwaiter().GetResult()
+            ($result.Lines | ForEach-Object {{ ($_.Words | ForEach-Object {{ $_.Text }}) -join " " }}) -join "`n"
+        }}
+        '''
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps_script],
+                           capture_output=True, text=True, timeout=30,
+                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        if r.stdout.strip():
+            return {"ok": True, "text": r.stdout.strip()[:10000]}
+        return {"ok": True, "text": "", "note": "no text detected"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _run_windows_ocr_with_boxes(image_path: str, query: str) -> dict:
+    """
+    运行 Windows OCR 并返回文字位置信息。
+    Returns: {"ok": True, "matches": list} 或 {"ok": False, "error": str}
+    """
+    import base64 as _b64
+    try:
+        encoded_path = _b64.b64encode(image_path.encode("utf-8")).decode("ascii")
+        encoded_query = _b64.b64encode(query.encode('utf-8')).decode('ascii')
+        ps_script = f'''
+        Add-Type -AssemblyName System.Drawing | Out-Null
+        $path = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("{encoded_path}"))
+        $bmp = [System.Drawing.Bitmap]::FromFile($path)
+        $w = $bmp.Width; $h = $bmp.Height
+        $data = $bmp.LockBits([System.Drawing.Rectangle]::new(0,0,$w,$h), [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        $bytes = [byte[]]::new($data.Stride * $h)
+        [System.Runtime.InteropServices.Marshal]::Copy($data.Scan0, $bytes, 0, $bytes.Length)
+        $bmp.UnlockBits($data); $bmp.Dispose()
+
+        [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Graphics.Imaging, ContentType = WindowsRuntime] | Out-Null
+        [Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType = WindowsRuntime] | Out-Null
+
+        $sb = [Windows.Graphics.Imaging.SoftwareBitmap]::CreateCopyFromBuffer(
+            [Windows.Security.Cryptography.CryptographicBuffer]::CreateFromByteArray($bytes),
+            [Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8, $w, $h)
+        $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+        if (-not $engine) {{ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage("zh-Hans") }}
+        if (-not $engine) {{ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage("en") }}
+        if ($engine) {{
+            $result = $engine.RecognizeAsync($sb).GetAwaiter().GetResult()
+            $queryEncoded = "{encoded_query}"
+            $query = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($queryEncoded)).ToLower()
+            $matches = @()
+            foreach ($line in $result.Lines) {{
+                foreach ($word in $line.Words) {{
+                    if ($word.Text.ToLower().Contains($query)) {{
+                        $matches += [PSCustomObject]@{{
+                            Text = $word.Text
+                            X = [int]($word.BoundingRect.X + $word.BoundingRect.Width / 2)
+                            Y = [int]($word.BoundingRect.Y + $word.BoundingRect.Height / 2)
+                            W = [int]$word.BoundingRect.Width
+                            H = [int]$word.BoundingRect.Height
+                        }}
+                    }}
+                }}
+            }}
+            ConvertTo-Json -InputObject $matches -Compress
+        }}
+        '''
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps_script],
+                           capture_output=True, text=True, timeout=30,
+                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        matches = []
+        if r.stdout.strip():
+            import json as _j
+            try:
+                data = _j.loads(r.stdout)
+                if isinstance(data, dict):
+                    data = [data]
+                elif data is None:
+                    data = []
+                for m in data:
+                    matches.append({"text": m.get("Text", ""),
+                                    "x": m.get("X", 0), "y": m.get("Y", 0),
+                                    "w": m.get("W", 0), "h": m.get("H", 0)})
+            except:
+                pass
+        return {"ok": True, "matches": matches}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 def tool_ocr(image_path=None):
     """OCR 识别图片文字。优先 tesseract，降级 Windows 内置引擎"""
     try:
@@ -424,42 +600,9 @@ def tool_ocr(image_path=None):
 
         # 2) Windows built-in OCR
         if not text:
-            try:
-                import base64 as _b64
-                # 🔴 fix: base64-encode path to avoid PowerShell injection
-                encoded_target = _b64.b64encode(target.encode("utf-8")).decode("ascii")
-                ps = f'''
-                Add-Type -AssemblyName System.Drawing | Out-Null
-                $path = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("{encoded_target}"))
-                $bmp = [System.Drawing.Bitmap]::FromFile($path)
-                $w = $bmp.Width; $h = $bmp.Height
-                $data = $bmp.LockBits([System.Drawing.Rectangle]::new(0,0,$w,$h), [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
-                $bytes = [byte[]]::new($data.Stride * $h)
-                [System.Runtime.InteropServices.Marshal]::Copy($data.Scan0, $bytes, 0, $bytes.Length)
-                $bmp.UnlockBits($data); $bmp.Dispose()
-
-                [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType = WindowsRuntime] | Out-Null
-                [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Graphics.Imaging, ContentType = WindowsRuntime] | Out-Null
-                [Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType = WindowsRuntime] | Out-Null
-
-                $sb = [Windows.Graphics.Imaging.SoftwareBitmap]::CreateCopyFromBuffer(
-                    [Windows.Security.Cryptography.CryptographicBuffer]::CreateFromByteArray($bytes),
-                    [Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8, $w, $h)
-                $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
-                if (-not $engine) {{ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage("zh-Hans") }}
-                if (-not $engine) {{ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage("en") }}
-                if ($engine) {{
-                    $result = $engine.RecognizeAsync($sb).GetAwaiter().GetResult()
-                    ($result.Lines | ForEach-Object {{ ($_.Words | ForEach-Object {{ $_.Text }}) -join " " }}) -join "`n"
-                }}
-                '''
-                r2 = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                                   capture_output=True, text=True, timeout=30,
-                                   creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-                if r2.stdout.strip():
-                    text = r2.stdout.strip()[:10000]
-            except:
-                pass
+            result = _run_windows_ocr(target)
+            if result.get("ok") and result.get("text"):
+                text = result["text"]
 
         if not text:
             return {"ok": True, "text": "", "source": target, "note": "no text detected or OCR engine unavailable"}
@@ -476,79 +619,19 @@ register("ocr", "图片文字识别(OCR) — Extract text from image", tool_ocr,
 def tool_screenshot_find(text_query: str):
     """截图 + OCR 查找文字位置，返回坐标可用于点击"""
     import time as _time
-    import base64 as _b64
     target = os.path.expanduser(f"~/Desktop/visual_{int(_time.time())}.png")
     r = tool_screenshot(target)
     if not r.get("ok"):
         return {"ok": False, "error": "截图失败: " + r.get("error", "")}
 
-    # 🔴 fix: base64-encode path + query to avoid PowerShell injection
-    encoded_target = _b64.b64encode(target.encode("utf-8")).decode("ascii")
-    # Run OCR with word-level bounding boxes via PowerShell
-    ps = f'''
-    Add-Type -AssemblyName System.Drawing | Out-Null
-    $path = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("{encoded_target}"))
-    $bmp = [System.Drawing.Bitmap]::FromFile($path)
-    $w = $bmp.Width; $h = $bmp.Height
-    $data = $bmp.LockBits([System.Drawing.Rectangle]::new(0,0,$w,$h), [System.Drawing.Imaging.ImageLockMode]::ReadOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
-    $bytes = [byte[]]::new($data.Stride * $h)
-    [System.Runtime.InteropServices.Marshal]::Copy($data.Scan0, $bytes, 0, $bytes.Length)
-    $bmp.UnlockBits($data); $bmp.Dispose()
+    # 使用提取的公共函数
+    result = _run_windows_ocr_with_boxes(target, text_query)
+    if not result.get("ok"):
+        return {"ok": False, "error": result.get("error", "OCR 失败")}
 
-    [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Graphics.Imaging, ContentType = WindowsRuntime] | Out-Null
-    [Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType = WindowsRuntime] | Out-Null
-
-    $sb = [Windows.Graphics.Imaging.SoftwareBitmap]::CreateCopyFromBuffer(
-        [Windows.Security.Cryptography.CryptographicBuffer]::CreateFromByteArray($bytes),
-        [Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8, $w, $h)
-    $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
-    if (-not $engine) {{ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage("zh-Hans") }}
-    if (-not $engine) {{ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage("en") }}
-    if ($engine) {{
-        $result = $engine.RecognizeAsync($sb).GetAwaiter().GetResult()
-        # 🔴 fix: base64-encode query to avoid PowerShell injection
-        $queryEncoded = "{_b64.b64encode(text_query.encode('utf-8')).decode('ascii')}"
-        $query = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($queryEncoded)).ToLower()
-        $matches = @()
-        foreach ($line in $result.Lines) {{
-            foreach ($word in $line.Words) {{
-                if ($word.Text.ToLower().Contains($query)) {{
-                    $matches += [PSCustomObject]@{{
-                        Text = $word.Text
-                        X = [int]($word.BoundingRect.X + $word.BoundingRect.Width / 2)
-                        Y = [int]($word.BoundingRect.Y + $word.BoundingRect.Height / 2)
-                        W = [int]$word.BoundingRect.Width
-                        H = [int]$word.BoundingRect.Height
-                    }}
-                }}
-            }}
-        }}
-        ConvertTo-Json -InputObject $matches -Compress
-    }}
-    '''
-    try:
-        r2 = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                           capture_output=True, text=True, timeout=30,
-                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-        matches = []
-        if r2.stdout.strip():
-            import json as _j
-            try:
-                data = _j.loads(r2.stdout)
-                if isinstance(data, dict):
-                    data = [data]
-                elif data is None:
-                    data = []
-                for m in data:
-                    matches.append({"text": m.get("Text", ""),
-                                    "x": m.get("X", 0), "y": m.get("Y", 0),
-                                    "w": m.get("W", 0), "h": m.get("H", 0)})
-            except:
-                pass
-        return {"ok": True, "query": text_query, "matches": matches[:20],
-                "screenshot": target, "instruction": "Use click(x, y) to click the target"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+    matches = result.get("matches", [])
+    return {"ok": True, "query": text_query, "matches": matches[:20],
+            "screenshot": target, "instruction": "Use click(x, y) to click the target"}
 
 
 def tool_click_text(text_query: str):
@@ -1529,32 +1612,39 @@ _CACHE_MAX = 200  # max entries before LRU eviction
 CACHE_TTL = {
     "system_info": 15,      # 15s — hardware doesn't change fast
     "web_search": 60,       # 60s — same query won't change
-    "get_windows": 5,       # 5s
-    "list_processes": 10,   # 10s
-    "get_volume": 5,
-    "mouse_pos": 0.5,       # 0.5s
-    "list_dir": 3,
+    "list_dir": 5,          # 5s — directory listings
+    "read_file": 10,        # 10s — file contents
 }
 
 def execute(tool_name, params):
     if tool_name not in TOOLS:
-        return {"ok": False, "error": f"Unknown tool: {tool_name}"}
+        return {"ok": False, "error": "Unknown tool: " + tool_name}
 
     # Check cache for idempotent reads
     ttl = CACHE_TTL.get(tool_name)
     if ttl:
         import time as _t
-        cache_key = f"{tool_name}:{json.dumps(params, sort_keys=True, default=str)}"
+        cache_key = tool_name + ":" + json.dumps(params, sort_keys=True, default=str)
         cached = _TOOL_CACHE.get(cache_key)
         if cached and (_t.time() - cached[0]) < ttl:
             return cached[1]
 
+    # 并发控制
+    acquired = _tool_semaphore.acquire(timeout=30)
+    if not acquired:
+        return {"ok": False, "error": "Tool execution timeout (too many concurrent requests)"}
+
     try:
         result = TOOLS[tool_name]["handler"](**params)
     except TypeError as e:
-        result = {"ok": False, "error": f"Invalid params: {e}"}
+        result = {"ok": False, "error": "Invalid params: " + str(e)}
     except Exception as e:
         result = {"ok": False, "error": str(e)}
+    finally:
+        try:
+            _tool_semaphore.release()
+        except:
+            pass
 
     # 审计日志
     try:
@@ -1566,7 +1656,6 @@ def execute(tool_name, params):
     # Cache successful results with LRU eviction
     if ttl and result.get("ok"):
         if len(_TOOL_CACHE) >= _CACHE_MAX:
-            # Evict oldest 20% of entries
             sorted_entries = sorted(_TOOL_CACHE.items(), key=lambda x: x[1][0])
             for old_key, _ in sorted_entries[:max(1, _CACHE_MAX // 5)]:
                 del _TOOL_CACHE[old_key]

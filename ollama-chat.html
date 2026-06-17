@@ -2495,7 +2495,7 @@ async function loadCostStats() {
 // ═══════ Template Selector ═══════
 async function loadTemplates() {
     try {
-        const r = await fetch(GEN_API + '/api/templates');
+        const r = await fetch(ORCH_API + '/api/templates');
         const d = await r.json();
         const sel = document.getElementById('tplSelect');
         if (!sel) return;

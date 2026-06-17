@@ -10,7 +10,81 @@ from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from auth_middleware import AuthMiddleware, AUTH_TOKEN as _AUTH_TOKEN
 from logger import get_logger
+from dataclasses import dataclass, field
+from typing import Optional
 _log = get_logger("gen_web")
+
+# ═══════════════ 线程安全的状态管理 ═══════════════
+
+@dataclass
+class ImageState:
+    """生图状态 - 线程安全"""
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    status: str = "idle"
+    message: str = ""
+    image: Optional[str] = None
+    prompt_id: Optional[str] = None
+    positive: str = ""
+    negative: str = ""
+    seed: Optional[int] = None
+
+    def update(self, **kwargs):
+        """线程安全地更新状态"""
+        with self._lock:
+            for key, value in kwargs.items():
+                if hasattr(self, key):
+                    setattr(self, key, value)
+
+    def get_status_dict(self, keys: list[str]) -> dict:
+        """线程安全地获取状态字典"""
+        with self._lock:
+            return {k: getattr(self, k) for k in keys if hasattr(self, k)}
+
+    def clear_and_reset(self):
+        """线程安全地清空并重置状态"""
+        with self._lock:
+            self.status = "starting"
+            self.message = ""
+            self.image = None
+            self.positive = ""
+            self.negative = ""
+            self.seed = None
+            self.prompt_id = None
+
+    def is_busy(self) -> bool:
+        """检查是否正在生成"""
+        with self._lock:
+            return self.status in ("enhancing", "switching", "generating")
+
+
+@dataclass
+class VideoState:
+    """视频生成状态 - 线程安全"""
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    status: str = "idle"
+    message: str = ""
+    frames: list = field(default_factory=list)
+    image: Optional[str] = None
+    task_id: Optional[str] = None
+    url: Optional[str] = None
+
+    def update(self, **kwargs):
+        """线程安全地更新状态"""
+        with self._lock:
+            for key, value in kwargs.items():
+                if hasattr(self, key):
+                    setattr(self, key, value)
+
+    def is_busy(self) -> bool:
+        """检查是否正在生成"""
+        with self._lock:
+            return self.status in ("creating", "generating")
+
+
+# 全局状态实例
+state = ImageState()
+video_state = VideoState()
+comfyui_proc = None
 
 # PyInstaller frozen 环境下 sys.executable 是 EXE 自身，不能用来 spawn 子进程
 def _get_real_python():
@@ -45,10 +119,6 @@ STEPS, CFG, WIDTH, HEIGHT = 25, 7.0, 1024, 1024
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs("static", exist_ok=True)
-
-# 全局状态
-state = {"status": "idle", "message": "", "image": None, "prompt_id": None, "positive": "", "negative": "", "seed": None}
-comfyui_proc = None
 
 # ═══════════════ 核心逻辑 ═══════════════
 
@@ -156,57 +226,43 @@ def poll_result(prompt_id, max_retries=150, timeout_sec=300):
 
 def generate_worker(user_input: str):
     """后台生成线程"""
-    global state
     try:
-        state["status"] = "enhancing"
-        state["message"] = "Ollama 增强提示词..."
+        state.update(status="enhancing", message="Ollama 增强提示词...")
         positive, negative = enhance_prompt(user_input)
-        state["positive"] = positive
-        state["negative"] = negative
+        state.update(positive=positive, negative=negative)
 
-        state["status"] = "switching"
-        state["message"] = "切换到 ComfyUI..."
+        state.update(status="switching", message="切换到 ComfyUI...")
         start_comfyui()
 
-        state["status"] = "generating"
-        state["message"] = "生成图片中..."
+        state.update(status="generating", message="生成图片中...")
         seed = int(time.time())
-        state["seed"] = seed
+        state.update(seed=seed)
         prompt_id = submit_workflow(positive, negative, seed)
-        state["prompt_id"] = prompt_id
+        state.update(prompt_id=prompt_id)
 
         img_url = poll_result(prompt_id)
-        state["status"] = "done"
-        state["message"] = "生成完成！"
-        state["image"] = img_url
+        state.update(status="done", message="生成完成！", image=img_url)
     except Exception as e:
-        state["status"] = "error"
-        state["message"] = str(e)
-
-video_state = {"status": "idle", "message": "", "frames": [], "image": None}
+        state.update(status="error", message=str(e))
 
 # ═══════════════ Image API ═══════════════
 
 @app.post("/api/generate")
 async def api_generate(request: Request):
-    global state
-    old_status = state.get("status", "idle")
-    if old_status in ("enhancing", "switching", "generating"):
+    if state.is_busy():
         return JSONResponse({"error": "正在生成中，请等待..."}, 400)
     data = await request.json()
     user_input = data.get("prompt", "").strip()
     if not user_input:
         return JSONResponse({"error": "请输入描述"}, 400)
-    # 使用 clear+update 避免线程间引用丢失
-    state.clear()
-    state.update({"status": "starting", "message": "", "image": None,
-                  "positive": "", "negative": "", "seed": None, "prompt_id": None})
+    # 使用线程安全的清空方法
+    state.clear_and_reset()
     threading.Thread(target=generate_worker, args=(user_input,), daemon=True).start()
     return {"ok": True}
 
 @app.get("/api/status")
 async def api_status():
-    return {k: state[k] for k in ["status", "message", "image", "positive", "negative", "seed"]}
+    return state.get_status_dict(["status", "message", "image", "positive", "negative", "seed"])
 
 # ═══════════════ Volcengine Video ═══════════════
 VOLC_VIDEO_MODELS = {
@@ -487,8 +543,7 @@ async def api_or_image(request: Request):
 
 @app.post("/api/generate_video")
 async def api_generate_video(request: Request):
-    global video_state
-    if video_state["status"] in ("creating", "generating"):
+    if video_state.is_busy():
         return JSONResponse({"error": "正在生成视频中，请等待..."}, 400)
     data = await request.json()
     user_input = data.get("prompt", "").strip()
@@ -497,32 +552,28 @@ async def api_generate_video(request: Request):
     ratio = data.get("ratio", "16:9")
     duration = data.get("duration", 5)
     if not user_input: return JSONResponse({"error": "请输入描述"}, 400)
-    video_state = {"status": "creating", "message": "创建视频任务...", "url": None, "task_id": None}
+    video_state.update(status="creating", message="创建视频任务...", url=None, task_id=None)
     threading.Thread(target=volc_video_worker, args=(user_input, model, image_url, ratio, duration), daemon=True).start()
     return {"ok": True}
 
 @app.get("/api/video_status")
 async def api_video_status():
-    return video_state
+    return video_state.__dict__.copy()
 
 def volc_video_worker(prompt, model, image_url=None, ratio="16:9", duration=5):
-    global video_state
     try:
         task_id, err = volc_video_create(prompt, model, image_url, ratio, duration)
         if err:
-            video_state["status"] = "error"; video_state["message"] = err; return
-        video_state["task_id"] = task_id
-        video_state["status"] = "generating"
-        video_state["message"] = "云端生成中..."
+            video_state.update(status="error", message=err)
+            return
+        video_state.update(task_id=task_id, status="generating", message="云端生成中...")
         url, err = volc_video_poll(task_id)
         if err:
-            video_state["status"] = "error"; video_state["message"] = err; return
-        video_state["status"] = "done"
-        video_state["url"] = url
-        video_state["message"] = "视频完成！"
+            video_state.update(status="error", message=err)
+            return
+        video_state.update(status="done", url=url, message="视频完成！")
     except Exception as e:
-        video_state["status"] = "error"
-        video_state["message"] = str(e)
+        video_state.update(status="error", message=str(e))
 
 @app.get("/api/comfyui_status")
 async def api_comfyui_status():
@@ -538,9 +589,8 @@ async def api_ollama_status():
 
 @app.get("/api/switch_to_ollama")
 async def api_switch_to_ollama():
-    global state, comfyui_proc
-    state["status"] = "switching_ollama"
-    state["message"] = "切换到 Ollama..."
+    global comfyui_proc
+    state.update(status="switching_ollama", message="切换到 Ollama...")
     if comfyui_proc:
         try: comfyui_proc.terminate(); comfyui_proc.wait(timeout=5)
         except: comfyui_proc.kill()
@@ -551,10 +601,10 @@ async def api_switch_to_ollama():
     for _ in range(15):
         try:
             urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
-            state = {"status": "idle", "message": "", "image": None, "positive": "", "negative": "", "seed": None, "prompt_id": None}
+            state.clear_and_reset()
             return {"ok": True}
         except: time.sleep(1)
-    state["status"] = "idle"; state["message"] = "Ollama 启动超时"
+    state.update(status="idle", message="Ollama 启动超时")
     return JSONResponse({"ok": False, "error": "Ollama 启动超时"})
 
 @app.get("/output/{filename}")
@@ -609,151 +659,15 @@ async def api_lan_qr():
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={url}"
     return {"ok": True, "url": url, "qr_url": qr_url, "ip": ip}
 
-MOBILE_HTML = r"""<!DOCTYPE html>
-<html lang="zh">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
-<title>AI Suite · 手机遥控</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,sans-serif;background:#1a1a2e;color:#e0e0e0;height:100vh;display:flex;flex-direction:column}
-.header{background:#16213e;padding:12px;display:flex;gap:6px;align-items:center}
-.header h1{font-size:16px;background:linear-gradient(135deg,#a78bfa,#f472b6);-webkit-background-clip:text;-webkit-text-fill-color:transparent;flex:1}
-.header select{background:#0f3460;color:#e0e0e0;border:1px solid #533483;padding:6px;border-radius:6px;font-size:12px}
-.tabs{display:flex;gap:4px;padding:8px 12px}
-.tab{padding:8px 16px;border:none;border-radius:8px;font-size:13px;cursor:pointer;background:#0f3460;color:#888}
-.tab.active{background:#533483;color:#fff}
-.chat{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
-.msg{padding:10px 14px;border-radius:12px;max-width:90%;line-height:1.5;font-size:14px;word-break:break-word}
-.msg.user{align-self:flex-end;background:#533483;color:#fff}
-.msg.assistant{align-self:flex-start;background:#16213e;border:1px solid #333}
-.msg .role{font-size:10px;opacity:.5;margin-bottom:3px}
-.input-area{display:flex;gap:8px;padding:12px;background:#16213e;border-top:1px solid #333}
-.input-area textarea{flex:1;background:#0f3460;color:#e0e0e0;border:1px solid #533483;border-radius:8px;padding:10px;font-size:14px;resize:none;min-height:44px;max-height:100px;font-family:inherit;outline:none}
-.input-area button{background:#a78bfa;color:#fff;border:none;padding:10px 16px;border-radius:8px;font-size:14px;font-weight:bold}
-.status{text-align:center;font-size:11px;color:#666;padding:4px}
-.spinner{width:20px;height:20px;border:2px solid #333;border-top-color:#a78bfa;border-radius:50%;animation:spin .7s linear infinite;display:inline-block;vertical-align:middle;margin-right:6px}
-@keyframes spin{to{transform:rotate(360deg)}}
-.tool-log{font-size:11px;color:#a78bfa;padding:4px 8px;background:rgba(167,139,250,.1);border-radius:4px;margin:2px 0}
-</style>
-</head>
-<body>
-<div class="header">
-  <h1>🤖 AI Suite</h1>
-  <select id="modelSel" onchange="switchModel()">
-    <option value="deepseek">DeepSeek V4</option>
-    <option value="ollama:qwen3:8b">Qwen3 本地</option>
-    <option value="ollama:deepseek-r1:14b">DeepSeek-R1 本地</option>
-    <option value="claude">Claude 云端</option>
-    <option value="gemini">Gemini 云端</option>
-  </select>
-</div>
-<div class="tabs">
-  <button class="tab active" onclick="switchTab('chat')">💬 对话</button>
-  <button class="tab" onclick="switchTab('agent')">🤖 Agent</button>
-</div>
-<div class="chat" id="chatLog"></div>
-<div class="status" id="status">就绪</div>
-<div class="input-area">
-  <textarea id="input" placeholder="输入内容..." rows="1"></textarea>
-  <button id="sendBtn" onclick="send()">发送</button>
-</div>
-<script>
-const ORCH = window.location.protocol + '//' + window.location.hostname + ':5001';
-let mode = 'chat', model = 'deepseek';
-
-function switchTab(t) {
-  mode = t;
-  document.querySelectorAll('.tab').forEach((b,i) => b.classList.toggle('active', (i===0&&t==='chat')||(i===1&&t==='agent')));
-  document.getElementById('input').placeholder = t==='agent' ? '输入任务，Agent 自动执行...' : '输入内容...';
-}
-
-function switchModel() { model = document.getElementById('modelSel').value; }
-
-function addMsg(role, text) {
-  let div = document.createElement('div');
-  div.className = 'msg ' + role;
-  div.innerHTML = '<div class="role">' + (role==='user'?'你':role==='agent'?'🤖Agent':'g0dness') + '</div>' + text.replace(/</g,'&lt;');
-  document.getElementById('chatLog').appendChild(div);
-  div.scrollIntoView({behavior:'smooth'});
-  return div;
-}
-
-async function send() {
-  let input = document.getElementById('input'), text = input.value.trim();
-  if (!text) return;
-  input.value = ''; document.getElementById('sendBtn').disabled = true;
-  document.getElementById('status').innerHTML = '<span class="spinner"></span>处理中...';
-
-  addMsg('user', text);
-
-  if (mode === 'agent') {
-    try {
-      let r = await fetch(ORCH + '/api/agent/stream', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({task: text, model: model})
-      });
-      let div = addMsg('agent', '');
-      let full = '', tools = [];
-      let reader = r.body.getReader(), decoder = new TextDecoder(), buf = '';
-      while (true) {
-        let {done, value} = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, {stream: true});
-        let lines = buf.split('\n'); buf = lines.pop();
-        for (let line of lines) {
-          if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
-          try {
-            let evt = JSON.parse(line.slice(6));
-            if (evt.type === 'thinking') { full = evt.text; }
-            else if (evt.type === 'tool_call') { tools.push('🔧 ' + evt.tool); }
-            else if (evt.type === 'tool_result') { tools.push((evt.result?.ok?'✅':'❌') + ' ' + evt.tool); }
-            else if (evt.type === 'done') { full = evt.text || full; }
-            div.innerHTML = '<div class="role">🤖Agent</div>' + (full||'...').replace(/</g,'&lt;');
-            if (tools.length) div.innerHTML += '<div class="tool-log">' + tools.join(' · ') + '</div>';
-          } catch(e) {}
-        }
-      }
-    } catch(e) { addMsg('assistant', '错误: ' + e.message); }
-  } else {
-    try {
-      let r = await fetch(ORCH + '/api/chat/stream', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({prompt: text, model: model})
-      });
-      let div = addMsg('assistant', '');
-      let full = '';
-      let reader = r.body.getReader(), decoder = new TextDecoder(), buf = '';
-      while (true) {
-        let {done, value} = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, {stream: true});
-        let lines = buf.split('\n'); buf = lines.pop();
-        for (let line of lines) {
-          if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
-          try {
-            let d = JSON.parse(line.slice(6));
-            if (d.token) { full += d.token; div.innerHTML = '<div class="role">g0dness</div>' + full.replace(/</g,'&lt;'); }
-          } catch(e) {}
-        }
-      }
-    } catch(e) { addMsg('assistant', '错误: ' + e.message); }
-  }
-  document.getElementById('sendBtn').disabled = false;
-  document.getElementById('status').textContent = '就绪';
-}
-
-document.getElementById('input').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-});
-</script>
-</body>
-</html>"""
+def load_html(filename: str) -> str:
+    """从 static 目录加载 HTML 文件"""
+    path = os.path.join("static", filename)
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
 
 @app.get("/mobile")
 async def mobile():
-    return HTMLResponse(MOBILE_HTML)
+    return HTMLResponse(load_html("mobile.html"))
 
 @app.get("/qr")
 async def qr_page():

@@ -610,6 +610,17 @@ app.add_middleware(
     allow_headers=["*"], allow_credentials=True,
 )
 
+# 注册路由模块
+try:
+    from routers import conversations, gateway, tools, templates
+    app.include_router(conversations.router)
+    app.include_router(gateway.router)
+    app.include_router(tools.router)
+    app.include_router(templates.router)
+    _log.info("Router modules loaded: conversations, gateway, tools, templates")
+except Exception as e:
+    _log.warning(f"Failed to load router modules: {e}")
+
 @app.get("/")
 async def index():
     return HTMLResponse("<h2>AI Suite Orchestrator :5001</h2><p>Chat at <a href='http://localhost:5000/chat'>localhost:5000/chat</a></p>")
@@ -1088,4 +1099,5 @@ if __name__ == "__main__":
         print("  Health Monitor: started")
     except Exception as e:
         print(f"  Health Monitor: {e}")
-    uvicorn.run(app, host="0.0.0.0", port=5001, log_level="warning")
+    # 启动应用
+    uvicorn.run(app, host="0.0.0.0", port=5001, log_level="info")
