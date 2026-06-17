@@ -328,13 +328,37 @@ def tool_open_browser(url):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+def _hide_ai_suite_window():
+    """隐藏 AI Suite 窗口，截屏前调用"""
+    try:
+        import ctypes
+        hwnd = ctypes.windll.user32.FindWindowW(None, "AI Suite - g0dness")
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+            import time; time.sleep(0.3)
+    except Exception:
+        pass
+
+def _show_ai_suite_window():
+    """恢复 AI Suite 窗口，截屏后调用"""
+    try:
+        import ctypes
+        hwnd = ctypes.windll.user32.FindWindowW(None, "AI Suite - g0dness")
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
 def tool_screenshot(path=None):
-    """截取屏幕截图，返回文件路径"""
+    """截取屏幕截图（自动隐藏 AI Suite 窗口），返回文件路径"""
+    _hide_ai_suite_window()
     try:
         from PIL import ImageGrab
         img = ImageGrab.grab()
         save_path = path or os.path.expanduser(f"~/Desktop/screenshot_{int(__import__('time').time())}.png")
         img.save(save_path, "PNG")
+        _show_ai_suite_window()
         return {"ok": True, "path": save_path, "size": f"{img.width}x{img.height}"}
     except ImportError:
         pass  # 走 PowerShell 降级
@@ -358,8 +382,10 @@ def tool_screenshot(path=None):
         '''
         subprocess.run(["powershell", "-NoProfile", "-Command", ps], timeout=30,
                       capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        _show_ai_suite_window()
         return {"ok": True, "path": save_path, "method": "powershell"}
     except Exception as e2:
+        _show_ai_suite_window()
         return {"ok": False, "error": f"screenshot failed: {e2}"}
 
 def tool_find_files(directory, pattern="*", max_results=50):
